@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Check, Plus, Trash2, ChevronLeft, ChevronRight, X, TrendingUp, Minus, Equal, ArrowDown, Repeat, AlertTriangle } from 'lucide-react';
+import { Check, Plus, Trash2, ChevronLeft, ChevronRight, X, TrendingUp, Minus, Equal, ArrowDown, Repeat, AlertTriangle, Trophy, ArrowLeftRight, Link2 } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,6 +9,8 @@ import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogHeader } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { RestTimer } from './RestTimer';
+import { CountdownTimer } from './CountdownTimer';
+import { ShareWorkoutButton } from './ShareWorkoutButton';
 import { useUIStore } from '@/stores/ui-store';
 import { generateId, convertWeight, convertToKg, formatDuration } from '@/lib/utils';
 import { getWeightRecommendation, getLastSetsForExercise } from '@/lib/weight-recommendation';
@@ -283,9 +285,20 @@ export function ActiveWorkout() {
         <ExerciseCard
           exerciseLog={currentExerciseLog}
           onSetLogged={(restSeconds) => {
-            startRestTimer(restSeconds ?? settings.restTimerSeconds);
+            // Check if current exercise is part of a superset — skip rest timer if next is same group
+            const nextLog = exerciseLogs?.[currentIndex + 1];
+            if (
+              currentExerciseLog.supersetGroup &&
+              nextLog?.supersetGroup === currentExerciseLog.supersetGroup
+            ) {
+              // Same superset group — advance to next exercise without rest
+              setActiveWorkout({ currentExerciseIndex: currentIndex + 1 });
+            } else {
+              startRestTimer(restSeconds ?? settings.restTimerSeconds);
+            }
           }}
           onExerciseCompleted={handleExerciseCompleted}
+          isInSuperset={!!currentExerciseLog.supersetGroup}
         />
       )}
 
@@ -348,16 +361,19 @@ function ExerciseCard({
   exerciseLog,
   onSetLogged,
   onExerciseCompleted,
+  isInSuperset,
 }: {
   exerciseLog: ExerciseLog;
   onSetLogged: (restSeconds?: number) => void;
   onExerciseCompleted: () => void;
+  isInSuperset?: boolean;
 }) {
   const { t } = useTranslation();
   const { settings } = useUIStore();
   // Per-exercise weight unit override
   const [localUnit, setLocalUnit] = useState<WeightUnit>(settings.weightUnit);
   const toggleUnit = () => setLocalUnit((u) => (u === 'kg' ? 'lbs' : 'kg'));
+  const [showSwapDialog, setShowSwapDialog] = useState(false);
 
   const exercise = useLiveQuery(
     () => db.exercises.get(exerciseLog.exerciseId),
@@ -437,7 +453,15 @@ function ExerciseCard({
     <div className="px-4 space-y-3">
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-base">{exerciseName}</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-base">{exerciseName}</CardTitle>
+            {isInSuperset && (
+              <Badge variant="secondary" className="text-[10px] gap-0.5">
+                <Link2 className="h-3 w-3" />
+                Superset
+              </Badge>
+            )}
+          </div>
           {plannedExercise && (
             <p className="text-xs text-muted-foreground">
               {plannedExercise.targetSets} × {plannedExercise.targetReps}{' '}
@@ -457,8 +481,16 @@ function ExerciseCard({
         </CardHeader>
 
         <CardContent className="space-y-2">
-          {/* Unit toggle */}
-          <div className="flex justify-end">
+          {/* Unit toggle + swap */}
+          <div className="flex justify-between">
+            <button
+              onClick={() => setShowSwapDialog(true)}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-accent transition-colors touch-manipulation"
+              title={t('workout.swapExercise')}
+            >
+              <ArrowLeftRight className="h-3 w-3" />
+              {t('workout.swapExercise')}
+            </button>
             <button
               onClick={toggleUnit}
               className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium bg-secondary text-secondary-foreground hover:bg-accent transition-colors touch-manipulation"
@@ -505,6 +537,23 @@ function ExerciseCard({
             ))}
           </div>
 
+          {/* Countdown timer for isometrics */}
+          <CountdownTimer
+            onComplete={(seconds) => {
+              // Auto-log a time-based set
+              db.setLogs.add({
+                id: generateId(),
+                exerciseLogId: exerciseLog.id,
+                setNumber: (setLogs?.length ?? 0) + 1,
+                weight: 0,
+                reps: seconds,
+                isWarmup: false,
+                completedAt: new Date(),
+                isTimeBased: true,
+              });
+            }}
+          />
+
           <Button variant="outline" size="sm" className="w-full" onClick={handleAddSet}>
             <Plus className="h-4 w-4 mr-1" />
             {t('workout.addSet')}
@@ -523,7 +572,103 @@ function ExerciseCard({
           )}
         </CardContent>
       </Card>
+
+      {/* Swap exercise dialog */}
+      {showSwapDialog && (
+        <SwapExerciseDialog
+          currentExerciseId={exerciseLog.exerciseId}
+          exerciseLogId={exerciseLog.id}
+          primaryMuscleId={exercise?.muscleGroupIds[0]}
+          onSwapped={() => setShowSwapDialog(false)}
+          onClose={() => setShowSwapDialog(false)}
+        />
+      )}
     </div>
+  );
+}
+
+function SwapExerciseDialog({
+  currentExerciseId,
+  exerciseLogId,
+  primaryMuscleId,
+  onSwapped,
+  onClose,
+}: {
+  currentExerciseId: string;
+  exerciseLogId: string;
+  primaryMuscleId?: string;
+  onSwapped: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const [search, setSearch] = useState('');
+
+  const exercises = useLiveQuery(async () => {
+    let all = await db.exercises.toArray();
+    // Prefer same muscle group
+    if (primaryMuscleId) {
+      all.sort((a, b) => {
+        const aMatch = a.muscleGroupIds.includes(primaryMuscleId) ? 0 : 1;
+        const bMatch = b.muscleGroupIds.includes(primaryMuscleId) ? 0 : 1;
+        return aMatch - bMatch;
+      });
+    }
+    return all.filter((e) => e.id !== currentExerciseId);
+  }, [currentExerciseId, primaryMuscleId]);
+
+  const filtered = exercises?.filter((e) => {
+    if (!search) return true;
+    const name = e.isCustom ? e.nameKey : t(e.nameKey);
+    return name.toLowerCase().includes(search.toLowerCase());
+  });
+
+  const handleSwap = async (newExerciseId: string) => {
+    // Delete existing sets for this exercise log
+    await db.setLogs.where('exerciseLogId').equals(exerciseLogId).delete();
+    // Update the exercise log to point to the new exercise
+    await db.exerciseLogs.update(exerciseLogId, {
+      exerciseId: newExerciseId,
+      startedAt: new Date(),
+      completedAt: undefined,
+    });
+    onSwapped();
+  };
+
+  return (
+    <Dialog open onClose={onClose}>
+      <DialogHeader onClose={onClose}>{t('workout.swapExercise')}</DialogHeader>
+      <div className="p-3 space-y-3">
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder={t('common.search')}
+          className="w-full rounded-lg border bg-secondary/50 px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+        />
+        <div className="max-h-[50vh] overflow-y-auto space-y-1">
+          {filtered?.map((ex) => {
+            const name = ex.isCustom ? ex.nameKey : t(ex.nameKey);
+            const isSameMuscle = primaryMuscleId && ex.muscleGroupIds.includes(primaryMuscleId);
+            return (
+              <button
+                key={ex.id}
+                onClick={() => handleSwap(ex.id)}
+                className="w-full flex items-center gap-3 p-2.5 rounded-lg hover:bg-accent active:bg-accent/80 text-left transition-colors touch-manipulation"
+              >
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">{name}</p>
+                </div>
+                {isSameMuscle && (
+                  <Badge variant="success" className="text-[10px] shrink-0">
+                    {t('exerciseLibrary.primary')}
+                  </Badge>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
@@ -542,6 +687,28 @@ function SetRow({
   const displayWeight = convertWeight(set.weight, weightUnit);
   const [weightInput, setWeightInput] = useState(String(displayWeight));
   const [repsInput, setRepsInput] = useState(String(set.reps));
+
+  // Sync display when unit changes (per-exercise toggle)
+  useEffect(() => {
+    setWeightInput(String(convertWeight(set.weight, weightUnit)));
+  }, [weightUnit, set.weight]);
+
+  // Time-based sets (planks, isometrics)
+  if (set.isTimeBased) {
+    return (
+      <div className="grid grid-cols-[32px_1fr_1fr_1fr_32px] gap-2 items-center p-1 rounded">
+        <span className="text-sm font-mono text-muted-foreground text-center">{set.setNumber}</span>
+        <span className="text-sm font-mono col-span-2 text-center">⏱ {set.reps}s</span>
+        <span />
+        <button
+          className="h-8 w-8 flex items-center justify-center text-muted-foreground hover:text-destructive touch-manipulation"
+          onClick={onDelete}
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -648,6 +815,8 @@ function SetRow({
 function WorkoutSummary({ workoutLogId, onClose }: { workoutLogId: string; onClose: () => void }) {
   const { t } = useTranslation();
   const { settings } = useUIStore();
+  const [notes, setNotes] = useState('');
+  const [rating, setRating] = useState(0);
 
   const workoutLog = useLiveQuery(() => db.workoutLogs.get(workoutLogId), [workoutLogId]);
   const exerciseLogs = useLiveQuery(
@@ -655,7 +824,14 @@ function WorkoutSummary({ workoutLogId, onClose }: { workoutLogId: string; onClo
     [workoutLogId]
   );
 
+  // Load existing notes & rating
+  useEffect(() => {
+    if (workoutLog?.notes) setNotes(workoutLog.notes);
+    if (workoutLog?.rating) setRating(workoutLog.rating);
+  }, [workoutLog?.notes, workoutLog?.rating]);
+
   const [stats, setStats] = useState({ totalSets: 0, totalVolume: 0 });
+  const [prs, setPrs] = useState<Array<{ exerciseName: string; type: string; value: string }>>([]);
   const [exerciseDetails, setExerciseDetails] = useState<Array<{
     name: string;
     setsDone: number;
@@ -709,8 +885,57 @@ function WorkoutSummary({ workoutLogId, onClose }: { workoutLogId: string; onClo
       }
       setStats({ totalSets, totalVolume });
       setExerciseDetails(details);
+
+      // PR detection: compare each exercise's best in this workout vs all previous workouts
+      const prList: typeof prs = [];
+      for (const el of exerciseLogs) {
+        const thisSets = await db.setLogs.where('exerciseLogId').equals(el.id).toArray();
+        const thisWorking = thisSets.filter((s) => !s.isWarmup);
+        if (thisWorking.length === 0) continue;
+
+        const exercise = await db.exercises.get(el.exerciseId);
+        const exName = exercise
+          ? exercise.isCustom ? exercise.nameKey : t(exercise.nameKey)
+          : '...';
+
+        const thisMaxWeight = Math.max(...thisWorking.map((s) => s.weight));
+        const thisMaxVolume = Math.max(...thisWorking.map((s) => s.weight * s.reps));
+
+        // Get all previous exercise logs for this exercise
+        const prevELogs = await db.exerciseLogs
+          .where('exerciseId')
+          .equals(el.exerciseId)
+          .toArray();
+        const prevELogsFiltered = prevELogs.filter((pe) => pe.id !== el.id);
+
+        let prevMaxWeight = 0;
+        let prevMaxVolume = 0;
+        for (const pe of prevELogsFiltered) {
+          const pSets = await db.setLogs.where('exerciseLogId').equals(pe.id).toArray();
+          for (const s of pSets.filter((s) => !s.isWarmup)) {
+            if (s.weight > prevMaxWeight) prevMaxWeight = s.weight;
+            if (s.weight * s.reps > prevMaxVolume) prevMaxVolume = s.weight * s.reps;
+          }
+        }
+
+        if (prevELogsFiltered.length > 0 && thisMaxWeight > prevMaxWeight) {
+          prList.push({
+            exerciseName: exName,
+            type: t('workout.prWeight'),
+            value: `${convertWeight(thisMaxWeight, settings.weightUnit)} ${settings.weightUnit}`,
+          });
+        }
+        if (prevELogsFiltered.length > 0 && thisMaxVolume > prevMaxVolume) {
+          prList.push({
+            exerciseName: exName,
+            type: t('workout.prVolume'),
+            value: `${convertWeight(thisMaxVolume, settings.weightUnit)} ${settings.weightUnit}`,
+          });
+        }
+      }
+      setPrs(prList);
     })();
-  }, [exerciseLogs, workoutLogId, t]);
+  }, [exerciseLogs, workoutLogId, t, settings.weightUnit]);
 
   const duration = workoutLog?.startedAt && workoutLog?.completedAt
     ? workoutLog.completedAt.getTime() - workoutLog.startedAt.getTime()
@@ -744,6 +969,25 @@ function WorkoutSummary({ workoutLogId, onClose }: { workoutLogId: string; onClo
             </CardContent>
           </Card>
         </div>
+
+        {/* PRs */}
+        {prs.length > 0 && (
+          <Card className="border-warning/40 bg-warning/5">
+            <CardContent className="p-3 space-y-2">
+              <div className="flex items-center gap-2">
+                <Trophy className="h-5 w-5 text-warning" />
+                <h3 className="text-sm font-semibold">{t('workout.personalRecords')}</h3>
+              </div>
+              {prs.map((pr, i) => (
+                <div key={i} className="flex items-center gap-2 text-sm">
+                  <span className="text-warning">🏆</span>
+                  <span className="font-medium">{pr.exerciseName}</span>
+                  <span className="text-muted-foreground">— {pr.type}: {pr.value}</span>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         {/* Per-exercise breakdown */}
         {exerciseDetails.length > 0 && (
@@ -790,7 +1034,67 @@ function WorkoutSummary({ workoutLogId, onClose }: { workoutLogId: string; onClo
           </div>
         )}
 
-        <Button className="w-full" size="lg" onClick={onClose}>
+        {/* Rating */}
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-muted-foreground">{t('workout.workoutRating')}</label>
+          <div className="flex items-center gap-1">
+            {[1, 2, 3, 4, 5].map((n) => (
+              <button
+                key={n}
+                onClick={() => setRating(n === rating ? 0 : n)}
+                className={`h-10 w-10 rounded-lg flex items-center justify-center text-lg transition-colors touch-manipulation ${
+                  n <= rating
+                    ? 'bg-primary/20 text-primary'
+                    : 'bg-secondary/50 text-muted-foreground'
+                }`}
+              >
+                ★
+              </button>
+            ))}
+            {rating > 0 && (
+              <span className="text-sm text-muted-foreground ml-2">{t(`workout.ratingLabel${rating}`)}</span>
+            )}
+          </div>
+        </div>
+
+        {/* Notes */}
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium text-muted-foreground">{t('workout.workoutNotes')}</label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder={t('workout.notesPlaceholder')}
+            rows={3}
+            className="w-full rounded-lg border bg-secondary/50 px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
+          />
+        </div>
+
+        {/* Share */}
+        <ShareWorkoutButton
+          data={{
+            duration: formatDuration(duration),
+            totalSets: stats.totalSets,
+            totalVolume: convertWeight(stats.totalVolume, settings.weightUnit).toLocaleString(),
+            weightUnit: settings.weightUnit,
+            exercises: exerciseDetails.map((ex) => ({
+              name: ex.name,
+              sets: ex.setsDone,
+              volume: convertWeight(ex.volume, settings.weightUnit).toLocaleString(),
+            })),
+            prs,
+            date: workoutLog ? new Date(workoutLog.startedAt).toLocaleDateString() : '',
+          }}
+        />
+
+        <Button className="w-full" size="lg" onClick={async () => {
+          const updates: Record<string, unknown> = {};
+          if (notes.trim()) updates.notes = notes.trim();
+          if (rating > 0) updates.rating = rating;
+          if (Object.keys(updates).length > 0) {
+            await db.workoutLogs.update(workoutLogId, updates);
+          }
+          onClose();
+        }}>
           {t('common.done')}
         </Button>
       </div>

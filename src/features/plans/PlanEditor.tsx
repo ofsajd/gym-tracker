@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp, MoveUp, MoveDown } from 'lucide-react';
+import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp, MoveUp, MoveDown, Link2, Unlink2 } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card, CardContent } from '@/components/ui/card';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { ExercisePicker } from './ExercisePicker';
-import type { TrainingPlan, TrainingDay, PlannedExercise } from '@/types/models';
+import type { TrainingPlan, TrainingDay, PlannedExercise, PeriodizationPhase } from '@/types/models';
 import { generateId } from '@/lib/utils';
 
 type Props = {
@@ -23,6 +23,7 @@ export function PlanEditor({ plan, onClose }: Props) {
   const [weekCount, setWeekCount] = useState(plan?.weekCount ?? 8);
   const [expandedDayId, setExpandedDayId] = useState<string | null>(null);
   const [showExercisePicker, setShowExercisePicker] = useState<string | null>(null);
+  const [phases, setPhases] = useState<PeriodizationPhase[]>(plan?.phases ?? []);
 
   const planIdRef = useRef(plan?.id ?? generateId());
   const planId = planIdRef.current;
@@ -51,6 +52,7 @@ export function PlanEditor({ plan, onClose }: Props) {
       name: name || t('plans.createPlan'),
       description: description || undefined,
       weekCount,
+      phases: phases.length > 0 ? phases : undefined,
       updatedAt: new Date(),
     });
   };
@@ -158,6 +160,102 @@ export function PlanEditor({ plan, onClose }: Props) {
                 {t('common.weeks', { count: weekCount })}
               </span>
             </div>
+          </div>
+        </div>
+
+        {/* Periodization */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold">{t('plans.periodization')}</h2>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setPhases([...phases, { name: '', type: 'hypertrophy', weeks: 4 }]);
+              }}
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              {t('plans.addPhase')}
+            </Button>
+          </div>
+          {phases.length === 0 && (
+            <p className="text-xs text-muted-foreground">{t('plans.noPhasesHint')}</p>
+          )}
+          <div className="space-y-2">
+            {phases.map((phase, i) => (
+              <Card key={i}>
+                <CardContent className="p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={phase.name}
+                      onChange={(e) => {
+                        const next = [...phases];
+                        next[i] = { ...next[i], name: e.target.value };
+                        setPhases(next);
+                      }}
+                      onBlur={savePlanMeta}
+                      placeholder={t('plans.phaseName')}
+                      className="flex-1"
+                    />
+                    <button
+                      onClick={async () => {
+                        const next = phases.filter((_, j) => j !== i);
+                        setPhases(next);
+                        await db.trainingPlans.update(planId, { phases: next.length > 0 ? next : undefined, updatedAt: new Date() });
+                      }}
+                      className="text-destructive p-1"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={phase.type}
+                      onChange={async (e) => {
+                        const next = [...phases];
+                        next[i] = { ...next[i], type: e.target.value as PeriodizationPhase['type'] };
+                        setPhases(next);
+                        await db.trainingPlans.update(planId, { phases: next, updatedAt: new Date() });
+                      }}
+                      className="rounded-md border bg-background px-2 py-1.5 text-sm flex-1"
+                    >
+                      <option value="hypertrophy">{t('plans.phaseHypertrophy')}</option>
+                      <option value="strength">{t('plans.phaseStrength')}</option>
+                      <option value="endurance">{t('plans.phaseEndurance')}</option>
+                      <option value="deload">{t('plans.phaseDeload')}</option>
+                    </select>
+                    <div className="flex items-center gap-1">
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        onClick={async () => {
+                          const next = [...phases];
+                          next[i] = { ...next[i], weeks: Math.max(1, next[i].weeks - 1) };
+                          setPhases(next);
+                          await db.trainingPlans.update(planId, { phases: next, updatedAt: new Date() });
+                        }}
+                      >
+                        -
+                      </Button>
+                      <span className="w-8 text-center text-sm font-medium">{phase.weeks}</span>
+                      <Button
+                        variant="outline"
+                        size="icon-sm"
+                        onClick={async () => {
+                          const next = [...phases];
+                          next[i] = { ...next[i], weeks: next[i].weeks + 1 };
+                          setPhases(next);
+                          await db.trainingPlans.update(planId, { phases: next, updatedAt: new Date() });
+                        }}
+                      >
+                        +
+                      </Button>
+                      <span className="text-xs text-muted-foreground">{t('common.weeks', { count: phase.weeks })}</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
         </div>
 
@@ -330,6 +428,21 @@ function DayCard({
                 onUpdate={(updates) => handleUpdateExercise(ex.id, updates)}
                 onMoveUp={() => handleMoveExercise(ex.id, 'up')}
                 onMoveDown={() => handleMoveExercise(ex.id, 'down')}
+                nextExercise={exercises?.[idx + 1]}
+                onToggleSuperset={() => {
+                  const next = exercises?.[idx + 1];
+                  if (!next) return;
+                  if (ex.supersetGroup && ex.supersetGroup === next.supersetGroup) {
+                    // Unlink
+                    handleUpdateExercise(ex.id, { supersetGroup: undefined });
+                    handleUpdateExercise(next.id, { supersetGroup: undefined });
+                  } else {
+                    // Link — use existing group or create new one
+                    const group = ex.supersetGroup || Date.now();
+                    handleUpdateExercise(ex.id, { supersetGroup: group });
+                    handleUpdateExercise(next.id, { supersetGroup: group });
+                  }
+                }}
               />
             ))}
 
@@ -358,6 +471,8 @@ function PlannedExerciseRow({
   onUpdate,
   onMoveUp,
   onMoveDown,
+  nextExercise,
+  onToggleSuperset,
 }: {
   exercise: PlannedExercise;
   isFirst: boolean;
@@ -366,6 +481,8 @@ function PlannedExerciseRow({
   onUpdate: (updates: Partial<PlannedExercise>) => void;
   onMoveUp: () => void;
   onMoveDown: () => void;
+  nextExercise?: PlannedExercise;
+  onToggleSuperset: () => void;
 }) {
   const { t } = useTranslation();
   const ex = useLiveQuery(() => db.exercises.get(exercise.exerciseId), [exercise.exerciseId]);
@@ -376,8 +493,11 @@ function PlannedExerciseRow({
       : t(ex.nameKey)
     : '...';
 
+  const isLinkedToNext = !!(exercise.supersetGroup && nextExercise?.supersetGroup === exercise.supersetGroup);
+
   return (
-    <div className="flex items-center gap-2 py-2 border-b border-border/50 last:border-0">
+    <div>
+      <div className={`flex items-center gap-2 py-2 ${isLinkedToNext ? '' : 'border-b border-border/50 last:border-0'}`}>
       <div className="flex flex-col gap-0.5 shrink-0">
         <button
           className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 touch-manipulation"
@@ -447,6 +567,25 @@ function PlannedExerciseRow({
       <Button variant="ghost" size="icon-sm" onClick={onDelete}>
         <Trash2 className="h-4 w-4 text-muted-foreground" />
       </Button>
+    </div>
+      {/* Superset link button between this and next exercise */}
+      {!isLast && (
+        <div className="flex justify-center -my-1">
+          <button
+            onClick={onToggleSuperset}
+            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium transition-colors touch-manipulation ${
+              isLinkedToNext
+                ? 'bg-primary/15 text-primary'
+                : 'bg-secondary/60 text-muted-foreground hover:bg-secondary'
+            }`}
+            title={isLinkedToNext ? t('plans.unlinkSuperset') : t('plans.linkSuperset')}
+          >
+            {isLinkedToNext ? <Link2 className="h-3 w-3" /> : <Unlink2 className="h-3 w-3" />}
+            {isLinkedToNext ? t('plans.superset') : t('plans.linkSuperset')}
+          </button>
+        </div>
+      )}
+      {!isLinkedToNext && !isLast && <div className="border-b border-border/50" />}
     </div>
   );
 }

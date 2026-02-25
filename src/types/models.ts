@@ -14,6 +14,12 @@ export type Exercise = {
   videoUrl?: string; // optional tutorial video link
 };
 
+export type PeriodizationPhase = {
+  name: string;
+  type: 'strength' | 'hypertrophy' | 'endurance' | 'deload';
+  weeks: number;
+};
+
 export type TrainingPlan = {
   id: string;
   name: string;
@@ -22,6 +28,7 @@ export type TrainingPlan = {
   createdAt: Date;
   updatedAt: Date;
   isActive: boolean;
+  phases?: PeriodizationPhase[];
 };
 
 export type TrainingDay = {
@@ -41,6 +48,7 @@ export type PlannedExercise = {
   initialWeight?: number; // starting weight in kg for first workout
   restSeconds?: number;
   notes?: string;
+  supersetGroup?: number; // exercises with the same group number form a superset
 };
 
 export type WorkoutLog = {
@@ -52,6 +60,9 @@ export type WorkoutLog = {
   completedAt?: Date;
   notes?: string;
   bodyweight?: number;
+  readinessEnergy?: number; // 1-5
+  readinessSleep?: number;  // 1-5
+  rating?: number;          // 1-5 post-workout self-assessment
 };
 
 export type ExerciseLog = {
@@ -61,6 +72,7 @@ export type ExerciseLog = {
   order: number;
   startedAt?: Date;
   completedAt?: Date;
+  supersetGroup?: number;
 };
 
 export type SetLog = {
@@ -72,6 +84,7 @@ export type SetLog = {
   rpe?: number;
   isWarmup: boolean;
   completedAt: Date;
+  isTimeBased?: boolean; // true for planks/isometrics — reps stores seconds
 };
 
 export type WeightUnit = 'kg' | 'lbs';
@@ -113,5 +126,24 @@ export type ExportFullData = {
   workoutLogs: WorkoutLog[];
   exerciseLogs: ExerciseLog[];
   setLogs: SetLog[];
+  bodyMeasurements?: BodyMeasurement[];
   settings: AppSettings;
+};
+
+export type BodyMeasurement = {
+  id: string;
+  date: Date;
+  bodyweight?: number; // kg
+  chest?: number; // cm
+  waist?: number; // cm
+  hips?: number; // cm
+  bicepLeft?: number;
+  bicepRight?: number;
+  thighLeft?: number;
+  thighRight?: number;
+  calfLeft?: number;
+  calfRight?: number;
+  neck?: number;
+  bodyFatPercent?: number;
+  notes?: string;
 };

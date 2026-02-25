@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Clock, Calendar, Trophy, Check, X, AlertTriangle } from 'lucide-react';
+import { Clock, Calendar, Trophy, Check, X, AlertTriangle, Zap, Moon, Star, MessageSquare } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Dialog, DialogHeader } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
@@ -98,6 +98,34 @@ export function WorkoutDetailDialog({ workout, onClose }: Props) {
             <Badge variant="secondary">{workout.planName}</Badge>
           )}
         </div>
+
+        {/* Readiness + Rating */}
+        {(workout.readinessEnergy || workout.readinessSleep || workout.rating) && (
+          <div className="flex flex-wrap gap-3 text-sm">
+            {workout.readinessEnergy && (
+              <div className="flex items-center gap-1.5">
+                <Zap className="h-4 w-4 text-warning" />
+                <span className="text-muted-foreground">{t('workout.energyLevel')}:</span>
+                <span className="font-medium">{'★'.repeat(workout.readinessEnergy)}{'☆'.repeat(5 - workout.readinessEnergy)}</span>
+              </div>
+            )}
+            {workout.readinessSleep && (
+              <div className="flex items-center gap-1.5">
+                <Moon className="h-4 w-4 text-primary" />
+                <span className="text-muted-foreground">{t('workout.sleepQuality')}:</span>
+                <span className="font-medium">{'★'.repeat(workout.readinessSleep)}{'☆'.repeat(5 - workout.readinessSleep)}</span>
+              </div>
+            )}
+            {workout.rating && (
+              <div className="flex items-center gap-1.5">
+                <Star className="h-4 w-4 text-warning" />
+                <span className="text-muted-foreground">{t('workout.workoutRating')}:</span>
+                <span className="font-medium">{'★'.repeat(workout.rating)}{'☆'.repeat(5 - workout.rating)}</span>
+                <span className="text-xs text-muted-foreground">{t(`workout.ratingLabel${workout.rating}`)}</span>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid grid-cols-2 gap-2">
@@ -229,6 +257,18 @@ export function WorkoutDetailDialog({ workout, onClose }: Props) {
             </Card>
           );
         })}
+        {/* Notes */}
+        {workout.notes && (
+          <Card>
+            <CardContent className="p-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <MessageSquare className="h-4 w-4 text-muted-foreground" />
+                <span className="text-xs font-medium text-muted-foreground">{t('workout.workoutNotes')}</span>
+              </div>
+              <p className="text-sm whitespace-pre-wrap">{workout.notes}</p>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </Dialog>
   );

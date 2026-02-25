@@ -6,6 +6,7 @@ import { PlansPage } from '@/features/plans/PlansPage';
 import { ProgressPage } from '@/features/progress/ProgressPage';
 import { ExerciseLibraryPage } from '@/features/exercises/ExerciseLibraryPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
+import { BodyMeasurementsPage } from '@/features/measurements/BodyMeasurementsPage';
 
 export default function App() {
   return (
@@ -18,6 +19,7 @@ export default function App() {
           <Route path="progress" element={<ProgressPage />} />
           <Route path="exercises" element={<ExerciseLibraryPage />} />
           <Route path="more" element={<SettingsPage />} />
+          <Route path="measurements" element={<BodyMeasurementsPage />} />
         </Route>
       </Routes>
     </HashRouter>

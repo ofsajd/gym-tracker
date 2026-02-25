@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Globe, Palette, Scale, Timer, Volume2, Vibrate, Bell,
   Download, Upload, FileSpreadsheet, Share2, Trash2,
   ChevronRight, Moon, Sun, Monitor, QrCode, ScanLine,
+  Ruler,
 } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
@@ -20,6 +22,7 @@ import type { ThemeMode, Language, WeightUnit, TrainingPlan } from '@/types/mode
 export function SettingsPage() {
   const { t, i18n } = useTranslation();
   const { settings, updateSettings } = useUIStore();
+  const navigate = useNavigate();
   const [showQRShare, setShowQRShare] = useState(false);
   const [showQRScan, setShowQRScan] = useState(false);
   const [showPlanPicker, setShowPlanPicker] = useState(false);
@@ -51,6 +54,7 @@ export function SettingsPage() {
       workoutLogs: await db.workoutLogs.toArray(),
       exerciseLogs: await db.exerciseLogs.toArray(),
       setLogs: await db.setLogs.toArray(),
+      bodyMeasurements: await db.bodyMeasurements.toArray(),
       settings,
     };
 
@@ -85,6 +89,7 @@ export function SettingsPage() {
         if (data.workoutLogs) await db.workoutLogs.bulkPut(data.workoutLogs);
         if (data.exerciseLogs) await db.exerciseLogs.bulkPut(data.exerciseLogs);
         if (data.setLogs) await db.setLogs.bulkPut(data.setLogs);
+        if (data.bodyMeasurements) await db.bodyMeasurements.bulkPut(data.bodyMeasurements);
 
         alert(settings.language === 'pl' ? 'Dane zaimportowane!' : 'Data imported!');
       } catch {
@@ -439,6 +444,17 @@ export function SettingsPage() {
                 />
               </button>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Body Measurements */}
+        <Card>
+          <CardContent className="p-2">
+            <SettingsButton
+              icon={Ruler}
+              label={t('measurements.title')}
+              onClick={() => navigate('/app/measurements')}
+            />
           </CardContent>
         </Card>
 

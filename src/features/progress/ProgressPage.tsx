@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { TrendingUp, BarChart3, Flame, Dumbbell, Trophy, Calculator, ChevronLeft, ChevronRight } from 'lucide-react';
+import { TrendingUp, BarChart3, Flame, Dumbbell, Trophy, Calculator, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -20,6 +20,11 @@ import { Select } from '@/components/ui/select';
 import { Dialog, DialogHeader } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { useUIStore } from '@/stores/ui-store';
+import { AchievementsSection } from './AchievementsSection';
+import { MuscleHeatmap } from './MuscleHeatmap';
+import { StreakGrid } from './StreakGrid';
+import { WeekComparison } from './WeekComparison';
+import { WorkoutDetailDialog } from '../workouts/WorkoutDetailDialog';
 import { convertWeight, formatDuration } from '@/lib/utils';
 import {
   format,
@@ -360,6 +365,18 @@ export function ProgressPage() {
           />
         )}
 
+        {/* Muscle heatmap */}
+        <MuscleHeatmap />
+
+        {/* Streak grid */}
+        <StreakGrid />
+
+        {/* Week comparison */}
+        <WeekComparison />
+
+        {/* Achievements */}
+        <AchievementsSection />
+
         {/* Exercise analysis section */}
         <h3 className="text-sm font-medium text-muted-foreground pt-2">
           {t('progress.exerciseAnalysis')}
@@ -548,7 +565,7 @@ export function ProgressPage() {
   );
 }
 
-/* Day detail dialog — shows workout stats for a specific day */
+/* Day detail dialog — shows workouts for a specific day */
 function DayDetailDialog({
   date,
   dateLocale,
@@ -561,134 +578,133 @@ function DayDetailDialog({
   const { t } = useTranslation();
   const { settings } = useUIStore();
 
-  type DayExercise = {
-    name: string;
-    sets: number;
-    volume: number;
-    best: string;
-  };
-
-  const [stats, setStats] = useState<{
+  type DayWorkout = {
+    workout: import('@/types/models').WorkoutLog;
+    dayName?: string;
+    planName?: string;
     duration: number;
-    exercises: DayExercise[];
     totalSets: number;
     totalVolume: number;
-  } | null>(null);
+    isPartial: boolean;
+  };
+
+  const [dayWorkouts, setDayWorkouts] = useState<DayWorkout[]>([]);
+  const [selectedWorkout, setSelectedWorkout] = useState<DayWorkout | null>(null);
 
   useEffect(() => {
     (async () => {
       const dayStart = startOfDay(date);
-      const dayEnd = new Date(dayStart);
-      dayEnd.setDate(dayEnd.getDate() + 1);
 
-      // Find all workouts on this day
       const allWorkouts = await db.workoutLogs.filter((w) => {
         if (!w.completedAt) return false;
-        const d = startOfDay(w.completedAt);
-        return isSameDay(d, dayStart);
+        return isSameDay(startOfDay(w.completedAt), dayStart);
       }).toArray();
 
-      if (allWorkouts.length === 0) {
-        setStats({ duration: 0, exercises: [], totalSets: 0, totalVolume: 0 });
-        return;
-      }
-
-      let totalDuration = 0;
-      let totalSets = 0;
-      let totalVolume = 0;
-      const exercises: DayExercise[] = [];
-
+      const results: DayWorkout[] = [];
       for (const workout of allWorkouts) {
-        if (workout.startedAt && workout.completedAt) {
-          totalDuration += workout.completedAt.getTime() - workout.startedAt.getTime();
-        }
+        const day = workout.dayId ? await db.trainingDays.get(workout.dayId) : null;
+        const plan = workout.planId ? await db.trainingPlans.get(workout.planId) : null;
 
-        const eLogs = await db.exerciseLogs.where('workoutLogId').equals(workout.id).sortBy('order');
+        const dur = workout.startedAt && workout.completedAt
+          ? workout.completedAt.getTime() - workout.startedAt.getTime()
+          : 0;
+
+        const eLogs = await db.exerciseLogs.where('workoutLogId').equals(workout.id).toArray();
+        let totalSets = 0;
+        let totalVolume = 0;
+        let isPartial = false;
         for (const el of eLogs) {
           const sets = await db.setLogs.where('exerciseLogId').equals(el.id).toArray();
-          const workingSets = sets.filter((s) => !s.isWarmup);
-          if (workingSets.length === 0) continue;
-
-          const exercise = await db.exercises.get(el.exerciseId);
-          const name = exercise
-            ? exercise.isCustom ? exercise.nameKey : t(exercise.nameKey)
-            : el.exerciseId;
-
-          const vol = workingSets.reduce((sum, s) => sum + s.weight * s.reps, 0);
-          const bestSet = workingSets.reduce(
-            (best, s) => (s.weight > best.weight ? s : best),
-            workingSets[0]
-          );
-
-          totalSets += workingSets.length;
-          totalVolume += vol;
-
-          exercises.push({
-            name,
-            sets: workingSets.length,
-            volume: vol,
-            best: `${convertWeight(bestSet.weight, settings.weightUnit)}${settings.weightUnit} × ${bestSet.reps}`,
-          });
+          const working = sets.filter((s) => !s.isWarmup);
+          if (working.length === 0) isPartial = true;
+          totalSets += working.length;
+          totalVolume += working.reduce((sum, s) => sum + s.weight * s.reps, 0);
         }
-      }
 
-      setStats({ duration: totalDuration, exercises, totalSets, totalVolume });
+        results.push({
+          workout,
+          dayName: day?.name,
+          planName: plan?.name,
+          duration: dur,
+          totalSets,
+          totalVolume,
+          isPartial,
+        });
+      }
+      setDayWorkouts(results);
     })();
-  }, [date, settings.weightUnit, t]);
+  }, [date]);
+
+  if (selectedWorkout) {
+    return (
+      <WorkoutDetailDialog
+        workout={{ ...selectedWorkout.workout, dayName: selectedWorkout.dayName, planName: selectedWorkout.planName }}
+        onClose={() => setSelectedWorkout(null)}
+      />
+    );
+  }
 
   return (
     <Dialog open onClose={onClose}>
       <DialogHeader onClose={onClose}>
         {format(date, 'd MMMM yyyy', { locale: dateLocale })}
       </DialogHeader>
-      <div className="p-4 space-y-3">
-        {!stats ? (
-          <p className="text-center text-muted-foreground text-sm py-4">...</p>
+      <div className="p-4 space-y-2">
+        {dayWorkouts.length === 0 ? (
+          <p className="text-center text-muted-foreground text-sm py-4">
+            {t('progress.noExerciseData')}
+          </p>
         ) : (
-          <>
-            {/* Day summary row */}
-            <div className="grid grid-cols-3 gap-2 text-center">
-              <div className="p-2 bg-secondary rounded-lg">
-                <p className="text-lg font-bold">{formatDuration(stats.duration)}</p>
-                <p className="text-[10px] text-muted-foreground">{t('workout.duration')}</p>
-              </div>
-              <div className="p-2 bg-secondary rounded-lg">
-                <p className="text-lg font-bold">{stats.totalSets}</p>
-                <p className="text-[10px] text-muted-foreground">{t('workout.totalSets')}</p>
-              </div>
-              <div className="p-2 bg-secondary rounded-lg">
-                <p className="text-lg font-bold">
-                  {convertWeight(stats.totalVolume, settings.weightUnit).toLocaleString()}
-                </p>
-                <p className="text-[10px] text-muted-foreground">
-                  {t('workout.totalVolume')} ({settings.weightUnit})
-                </p>
-              </div>
-            </div>
-
-            {/* Exercise list */}
-            <div className="space-y-1.5">
-              {stats.exercises.map((ex, i) => (
-                <div key={i} className="flex items-center justify-between p-2 bg-secondary/50 rounded-lg">
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium truncate">{ex.name}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {ex.sets} {t('workout.totalSets').toLowerCase()} • {t('workout.bestSet')}: {ex.best}
-                    </p>
-                  </div>
-                  <span className="text-xs font-mono text-muted-foreground shrink-0 ml-2">
-                    {convertWeight(ex.volume, settings.weightUnit).toLocaleString()} {settings.weightUnit}
-                  </span>
+          dayWorkouts.map((dw) => (
+            <Card
+              key={dw.workout.id}
+              className="cursor-pointer active:scale-[0.98] transition-transform touch-manipulation"
+              onClick={() => setSelectedWorkout(dw)}
+            >
+              <CardContent className="p-3 flex items-center gap-3">
+                <div
+                  className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                    dw.isPartial
+                      ? 'bg-warning/10 text-warning'
+                      : 'bg-success/10 text-success'
+                  }`}
+                >
+                  <Dumbbell className="h-5 w-5" />
                 </div>
-              ))}
-            </div>
-
-            {stats.exercises.length === 0 && (
-              <p className="text-center text-sm text-muted-foreground py-4">
-                {t('progress.noExerciseData')}
-              </p>
-            )}
-          </>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium truncate">
+                    {dw.dayName ?? t('workout.title')}
+                  </p>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    {dw.duration > 0 && (
+                      <span className="flex items-center gap-0.5">
+                        <Clock className="h-3 w-3" />
+                        {formatDuration(dw.duration)}
+                      </span>
+                    )}
+                    <span>{dw.totalSets} {t('workout.totalSets').toLowerCase()}</span>
+                    <span>
+                      {convertWeight(dw.totalVolume, settings.weightUnit).toLocaleString()} {settings.weightUnit}
+                    </span>
+                    {dw.isPartial && (
+                      <span className="text-warning">{t('workout.partial')}</span>
+                    )}
+                  </div>
+                </div>
+                {dw.planName && (
+                  <span className="text-[10px] text-muted-foreground shrink-0 max-w-20 truncate">
+                    {dw.planName}
+                  </span>
+                )}
+                {dw.workout.rating && (
+                  <span className="text-xs text-warning shrink-0">
+                    {'★'.repeat(dw.workout.rating)}
+                  </span>
+                )}
+                <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+              </CardContent>
+            </Card>
+          ))
         )}
       </div>
     </Dialog>

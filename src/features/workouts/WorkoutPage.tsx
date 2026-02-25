@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Play, ChevronRight, Dumbbell, Plus, Calendar, Clock, Check } from 'lucide-react';
+import { Play, ChevronRight, Dumbbell, Plus, Calendar, Clock, Check, RotateCcw, AlertTriangle } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -10,6 +10,7 @@ import { PageHeader } from '@/components/layout/PageHeader';
 import { useUIStore } from '@/stores/ui-store';
 import { ActiveWorkout } from './ActiveWorkout';
 import { WorkoutDetailDialog } from './WorkoutDetailDialog';
+import { ReadinessDialog } from './ReadinessDialog';
 import { generateId, formatDuration } from '@/lib/utils';
 import type { WorkoutLog } from '@/types/models';
 
@@ -22,6 +23,9 @@ export function WorkoutPage() {
   const [selectedWorkout, setSelectedWorkout] = useState<
     (WorkoutLog & { dayName?: string; planName?: string }) | null
   >(null);
+  const [showReadiness, setShowReadiness] = useState(false);
+  const [pendingStart, setPendingStart] = useState<{ dayId: string; weekNumber: number } | null>(null);
+  const [pendingRepeat, setPendingRepeat] = useState(false);
 
   const activePlan = useLiveQuery(() => db.trainingPlans.filter((p) => p.isActive).first());
   const days = useLiveQuery(
@@ -93,7 +97,7 @@ export function WorkoutPage() {
   };
 
   const startWorkout = useCallback(
-    async (dayId: string, weekNumber: number) => {
+    async (dayId: string, weekNumber: number, readinessEnergy?: number, readinessSleep?: number) => {
       const workoutId = generateId();
       await db.workoutLogs.add({
         id: workoutId,
@@ -101,6 +105,8 @@ export function WorkoutPage() {
         planId: activePlan?.id,
         weekNumber,
         startedAt: new Date(),
+        readinessEnergy,
+        readinessSleep,
       });
 
       // Pre-populate exercise logs from plan
@@ -115,6 +121,7 @@ export function WorkoutPage() {
           workoutLogId: workoutId,
           exerciseId: pe.exerciseId,
           order: pe.order,
+          supersetGroup: pe.supersetGroup,
         });
       }
 
@@ -125,6 +132,87 @@ export function WorkoutPage() {
     },
     [activePlan, setActiveWorkout]
   );
+
+  // Repeat last workout: clone exercise structure from the most recent completed workout
+  const repeatLastWorkout = useCallback(async (readinessEnergy?: number, readinessSleep?: number) => {
+    const lastCompleted = recentWorkouts?.find((w) => w.completedAt);
+    if (!lastCompleted) return;
+
+    const workoutId = generateId();
+    await db.workoutLogs.add({
+      id: workoutId,
+      dayId: lastCompleted.dayId,
+      planId: lastCompleted.planId,
+      weekNumber: lastCompleted.weekNumber ? lastCompleted.weekNumber : undefined,
+      startedAt: new Date(),
+      readinessEnergy,
+      readinessSleep,
+    });
+
+    const oldELogs = await db.exerciseLogs
+      .where('workoutLogId')
+      .equals(lastCompleted.id)
+      .sortBy('order');
+
+    for (const el of oldELogs) {
+      await db.exerciseLogs.add({
+        id: generateId(),
+        workoutLogId: workoutId,
+        exerciseId: el.exerciseId,
+        order: el.order,
+        supersetGroup: el.supersetGroup,
+      });
+    }
+
+    setActiveWorkout({ isActive: true, workoutLogId: workoutId, currentExerciseIndex: 0 });
+  }, [recentWorkouts, setActiveWorkout]);
+
+  // Handle readiness submission
+  const handleReadinessSubmit = useCallback(async ({ energy, sleep }: { energy: number; sleep: number }) => {
+    setShowReadiness(false);
+    if (pendingStart) {
+      await startWorkout(pendingStart.dayId, pendingStart.weekNumber, energy, sleep);
+      setPendingStart(null);
+    } else if (pendingRepeat) {
+      await repeatLastWorkout(energy, sleep);
+      setPendingRepeat(false);
+    }
+  }, [pendingStart, pendingRepeat, startWorkout, repeatLastWorkout]);
+
+  const handleReadinessSkip = useCallback(async () => {
+    setShowReadiness(false);
+    if (pendingStart) {
+      await startWorkout(pendingStart.dayId, pendingStart.weekNumber);
+      setPendingStart(null);
+    } else if (pendingRepeat) {
+      await repeatLastWorkout();
+      setPendingRepeat(false);
+    }
+  }, [pendingStart, pendingRepeat, startWorkout, repeatLastWorkout]);
+
+  // Auto deload detection: suggest deload after 4+ consecutive weeks of training
+  const [showDeloadHint, setShowDeloadHint] = useState(false);
+  useEffect(() => {
+    (async () => {
+      const { subWeeks, startOfWeek, isAfter } = await import('date-fns');
+      const now = new Date();
+      // Check last 4 weeks (not counting current week)
+      let consecutiveWeeks = 0;
+      for (let w = 1; w <= 6; w++) {
+        const weekStart = startOfWeek(subWeeks(now, w), { weekStartsOn: 1 });
+        const weekEnd = startOfWeek(subWeeks(now, w - 1), { weekStartsOn: 1 });
+        const workoutsInWeek = await db.workoutLogs
+          .filter((wl) => !!wl.completedAt && isAfter(wl.completedAt, weekStart) && !isAfter(wl.completedAt, weekEnd))
+          .count();
+        if (workoutsInWeek >= 3) {
+          consecutiveWeeks++;
+        } else {
+          break;
+        }
+      }
+      setShowDeloadHint(consecutiveWeeks >= 4);
+    })();
+  }, []);
 
   if (activeWorkout.isActive && activeWorkout.workoutLogId) {
     return <ActiveWorkout />;
@@ -151,6 +239,25 @@ export function WorkoutPage() {
               </p>
             </div>
 
+            {/* Deload suggestion */}
+            {showDeloadHint && (
+              <Card className="border-warning/40 bg-warning/5">
+                <CardContent className="p-3 flex items-start gap-3">
+                  <AlertTriangle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium">{t('workout.deloadSuggestion')}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{t('workout.deloadSuggestionDesc')}</p>
+                  </div>
+                  <button
+                    onClick={() => setShowDeloadHint(false)}
+                    className="text-muted-foreground text-xs shrink-0"
+                  >
+                    ✕
+                  </button>
+                </CardContent>
+              </Card>
+            )}
+
             {/* Start new workout button */}
             <Button
               size="lg"
@@ -160,6 +267,22 @@ export function WorkoutPage() {
               <Plus className="h-5 w-5 mr-2" />
               {t('workout.newWorkout')}
             </Button>
+
+            {/* Repeat last workout */}
+            {recentWorkouts && recentWorkouts.some((w) => w.completedAt) && (
+              <Button
+                variant="outline"
+                size="lg"
+                className="w-full"
+                onClick={() => {
+                  setPendingRepeat(true);
+                  setShowReadiness(true);
+                }}
+              >
+                <RotateCcw className="h-4 w-4 mr-2" />
+                {t('workout.repeatLast')}
+              </Button>
+            )}
 
             {/* Recent workouts */}
             <div className="space-y-2">
@@ -320,7 +443,12 @@ export function WorkoutPage() {
               return (
                 <button
                   key={day.id}
-                  onClick={() => startWorkout(day.id, pendingWeek)}
+                  onClick={() => {
+                    setPendingStart({ dayId: day.id, weekNumber: pendingWeek });
+                    setShowReadiness(true);
+                    setShowDayPicker(false);
+                    setShowWeekPicker(false);
+                  }}
                   className="w-full flex items-center justify-between gap-3 p-4 rounded-lg hover:bg-accent active:bg-accent/80 text-left transition-colors touch-manipulation"
                 >
                   <div className="flex items-center gap-3">
@@ -351,6 +479,15 @@ export function WorkoutPage() {
         <WorkoutDetailDialog
           workout={selectedWorkout}
           onClose={() => setSelectedWorkout(null)}
+        />
+      )}
+
+      {/* Readiness check dialog */}
+      {showReadiness && (
+        <ReadinessDialog
+          open={showReadiness}
+          onSubmit={handleReadinessSubmit}
+          onSkip={handleReadinessSkip}
         />
       )}
     </div>
