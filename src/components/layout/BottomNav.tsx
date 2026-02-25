@@ -4,11 +4,11 @@ import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 
 const tabs = [
-  { to: '/', icon: Dumbbell, labelKey: 'app.tabs.workout' },
-  { to: '/plans', icon: ClipboardList, labelKey: 'app.tabs.plans' },
-  { to: '/exercises', icon: BookOpen, labelKey: 'app.tabs.exercises' },
-  { to: '/progress', icon: TrendingUp, labelKey: 'app.tabs.progress' },
-  { to: '/more', icon: Menu, labelKey: 'app.tabs.more' },
+  { to: '/app', icon: Dumbbell, labelKey: 'app.tabs.workout' },
+  { to: '/app/plans', icon: ClipboardList, labelKey: 'app.tabs.plans' },
+  { to: '/app/exercises', icon: BookOpen, labelKey: 'app.tabs.exercises' },
+  { to: '/app/progress', icon: TrendingUp, labelKey: 'app.tabs.progress' },
+  { to: '/app/more', icon: Menu, labelKey: 'app.tabs.more' },
 ];
 
 export function BottomNav() {
@@ -21,7 +21,7 @@ export function BottomNav() {
           <NavLink
             key={tab.to}
             to={tab.to}
-            end={tab.to === '/'}
+            end={tab.to === '/app'}
             className={({ isActive }) =>
               cn(
                 'flex flex-col items-center justify-center gap-1 px-3 py-2 rounded-lg text-xs font-medium transition-colors touch-manipulation min-w-[64px]',

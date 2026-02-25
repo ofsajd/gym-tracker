@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Check, Plus, Trash2, ChevronLeft, ChevronRight, X, TrendingUp, Minus, Equal, ArrowDown, Repeat } from 'lucide-react';
+import { Check, Plus, Trash2, ChevronLeft, ChevronRight, X, TrendingUp, Minus, Equal, ArrowDown, Repeat, AlertTriangle } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Dialog, DialogHeader } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { RestTimer } from './RestTimer';
 import { useUIStore } from '@/stores/ui-store';
@@ -18,6 +19,8 @@ export function ActiveWorkout() {
   const { activeWorkout, setActiveWorkout, clearActiveWorkout, startRestTimer, settings } = useUIStore();
   const [elapsed, setElapsed] = useState(0);
   const [showSummary, setShowSummary] = useState(false);
+  const [showFinishConfirm, setShowFinishConfirm] = useState(false);
+  const [skippedExercises, setSkippedExercises] = useState<string[]>([]);
 
   const workoutLog = useLiveQuery(
     () => (activeWorkout.workoutLogId ? db.workoutLogs.get(activeWorkout.workoutLogId) : undefined),
@@ -59,23 +62,140 @@ export function ActiveWorkout() {
     };
   }, []);
 
+  // Mark exercise as started when navigated to
+  useEffect(() => {
+    const el = exerciseLogs?.[activeWorkout.currentExerciseIndex];
+    if (el && !el.startedAt) {
+      db.exerciseLogs.update(el.id, { startedAt: new Date() });
+    }
+  }, [activeWorkout.currentExerciseIndex, exerciseLogs]);
+
   const currentIndex = activeWorkout.currentExerciseIndex;
   const currentExerciseLog = exerciseLogs?.[currentIndex];
   const totalExercises = exerciseLogs?.length ?? 0;
 
-  const handleFinish = useCallback(async () => {
+  // Check which exercises are completed (have sets) and which are skipped/partial
+  const getExerciseCompletionInfo = useCallback(async () => {
+    if (!exerciseLogs) return { incomplete: [] as string[], allDone: false };
+    const incomplete: string[] = [];
+    
+    // Get the workout to find planned exercises
+    const wl = activeWorkout.workoutLogId ? await db.workoutLogs.get(activeWorkout.workoutLogId) : null;
+    
+    for (const el of exerciseLogs) {
+      const setCount = await db.setLogs.where('exerciseLogId').equals(el.id).count();
+      
+      // Look up target sets from planned exercise
+      let targetSets = 0;
+      if (wl?.dayId) {
+        const pe = await db.plannedExercises
+          .where('dayId').equals(wl.dayId)
+          .and((p) => p.exerciseId === el.exerciseId)
+          .first();
+        targetSets = pe?.targetSets ?? 0;
+      }
+      
+      const isSkipped = setCount === 0;
+      const isPartial = targetSets > 0 && setCount > 0 && setCount < targetSets;
+      
+      if (isSkipped || isPartial) {
+        const exercise = await db.exercises.get(el.exerciseId);
+        const name = exercise
+          ? exercise.isCustom ? exercise.nameKey : t(exercise.nameKey)
+          : el.exerciseId;
+        if (isSkipped) {
+          incomplete.push(name);
+        } else {
+          incomplete.push(`${name} (${setCount}/${targetSets})`);
+        }
+      }
+    }
+    return { incomplete, allDone: incomplete.length === 0 };
+  }, [exerciseLogs, activeWorkout.workoutLogId, t]);
+
+  // Find the first skipped or partially completed exercise index
+  const findFirstSkippedIndex = useCallback(async (): Promise<number> => {
+    if (!exerciseLogs) return -1;
+    const wl = activeWorkout.workoutLogId ? await db.workoutLogs.get(activeWorkout.workoutLogId) : null;
+    
+    for (let i = 0; i < exerciseLogs.length; i++) {
+      const el = exerciseLogs[i];
+      if (!el.completedAt) {
+        const setCount = await db.setLogs.where('exerciseLogId').equals(el.id).count();
+        if (setCount === 0) return i;
+        
+        // Also return partial exercises
+        if (wl?.dayId) {
+          const pe = await db.plannedExercises
+            .where('dayId').equals(wl.dayId)
+            .and((p) => p.exerciseId === el.exerciseId)
+            .first();
+          if (pe && pe.targetSets > 0 && setCount < pe.targetSets) return i;
+        }
+      }
+    }
+    return -1;
+  }, [exerciseLogs, activeWorkout.workoutLogId]);
+
+  // Auto-advance: when an exercise reaches target sets, mark it complete and move to next
+  const handleExerciseCompleted = useCallback(async () => {
+    const el = exerciseLogs?.[currentIndex];
+    if (el && !el.completedAt) {
+      await db.exerciseLogs.update(el.id, { completedAt: new Date() });
+    }
+
+    // Check if there's a next exercise
+    if (currentIndex < totalExercises - 1) {
+      setActiveWorkout({ currentExerciseIndex: currentIndex + 1 });
+    } else {
+      // Last exercise done — check for skipped ones
+      const skippedIdx = await findFirstSkippedIndex();
+      if (skippedIdx >= 0) {
+        // Navigate to skipped exercise
+        setActiveWorkout({ currentExerciseIndex: skippedIdx });
+      } else {
+        // All done — show finish prompt
+        handleFinishRequest();
+      }
+    }
+  }, [exerciseLogs, currentIndex, totalExercises, setActiveWorkout, findFirstSkippedIndex]);
+
+  const handleFinishRequest = useCallback(async () => {
+    const info = await getExerciseCompletionInfo();
+    if (!info.allDone) {
+      setSkippedExercises(info.incomplete);
+      setShowFinishConfirm(true);
+    } else {
+      // All exercises done, show all-done confirm
+      setSkippedExercises([]);
+      setShowFinishConfirm(true);
+    }
+  }, [getExerciseCompletionInfo]);
+
+  const handleConfirmFinish = useCallback(async () => {
     if (!activeWorkout.workoutLogId) return;
+    // Mark any un-completed exercise logs
+    if (exerciseLogs) {
+      for (const el of exerciseLogs) {
+        if (!el.completedAt) {
+          const setCount = await db.setLogs.where('exerciseLogId').equals(el.id).count();
+          if (setCount > 0) {
+            await db.exerciseLogs.update(el.id, { completedAt: new Date() });
+          }
+        }
+      }
+    }
     await db.workoutLogs.update(activeWorkout.workoutLogId, {
       completedAt: new Date(),
     });
+    setShowFinishConfirm(false);
     setShowSummary(true);
-  }, [activeWorkout.workoutLogId]);
+  }, [activeWorkout.workoutLogId, exerciseLogs]);
 
   const handleDiscard = useCallback(async () => {
     if (!confirm(t('workout.discardConfirm'))) return;
     if (!activeWorkout.workoutLogId) return;
 
-    // Delete all set logs
     const eLogs = await db.exerciseLogs
       .where('workoutLogId')
       .equals(activeWorkout.workoutLogId)
@@ -106,7 +226,7 @@ export function ActiveWorkout() {
             <Button variant="ghost" size="sm" onClick={handleDiscard}>
               <X className="h-4 w-4" />
             </Button>
-            <Button variant="success" size="sm" onClick={handleFinish}>
+            <Button variant="success" size="sm" onClick={handleFinishRequest}>
               <Check className="h-4 w-4 mr-1" />
               {t('workout.finishWorkout')}
             </Button>
@@ -123,7 +243,7 @@ export function ActiveWorkout() {
       {/* Rest timer */}
       <RestTimer />
 
-      {/* Exercise navigation */}
+      {/* Exercise navigation with completion dots */}
       <div className="flex items-center justify-between px-4 py-3">
         <Button
           variant="ghost"
@@ -133,9 +253,21 @@ export function ActiveWorkout() {
         >
           <ChevronLeft className="h-5 w-5" />
         </Button>
-        <span className="text-sm font-medium">
-          {currentIndex + 1} / {totalExercises}
-        </span>
+        <div className="flex items-center gap-1.5">
+          {exerciseLogs?.map((el, i) => (
+            <button
+              key={el.id}
+              onClick={() => setActiveWorkout({ currentExerciseIndex: i })}
+              className={`h-2.5 rounded-full transition-all touch-manipulation ${
+                i === currentIndex
+                  ? 'w-6 bg-primary'
+                  : el.completedAt
+                    ? 'w-2.5 bg-success'
+                    : 'w-2.5 bg-muted-foreground/30'
+              }`}
+            />
+          ))}
+        </div>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -150,11 +282,63 @@ export function ActiveWorkout() {
       {currentExerciseLog && (
         <ExerciseCard
           exerciseLog={currentExerciseLog}
-          onSetLogged={() => {
-            const restSeconds = settings.restTimerSeconds;
-            startRestTimer(restSeconds);
+          onSetLogged={(restSeconds) => {
+            startRestTimer(restSeconds ?? settings.restTimerSeconds);
           }}
+          onExerciseCompleted={handleExerciseCompleted}
         />
+      )}
+
+      {/* Finish confirmation dialog */}
+      {showFinishConfirm && (
+        <Dialog open onClose={() => setShowFinishConfirm(false)}>
+          <DialogHeader onClose={() => setShowFinishConfirm(false)}>
+            {t('workout.finishWorkout')}
+          </DialogHeader>
+          <div className="p-4 space-y-4">
+            {skippedExercises.length > 0 ? (
+              <>
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-warning/10 border border-warning/20">
+                  <AlertTriangle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-sm font-medium">{t('workout.incompleteWarning')}</p>
+                    <ul className="text-xs text-muted-foreground mt-1 space-y-0.5">
+                      {skippedExercises.map((name, i) => (
+                        <li key={i}>• {name}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={() => setShowFinishConfirm(false)}>
+                    {t('workout.goBack')}
+                  </Button>
+                  <Button variant="destructive" className="flex-1" onClick={handleConfirmFinish}>
+                    {t('workout.finishAnyway')}
+                  </Button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="text-center space-y-2">
+                  <div className="h-14 w-14 mx-auto rounded-full bg-success/20 flex items-center justify-center">
+                    <Check className="h-7 w-7 text-success" />
+                  </div>
+                  <p className="font-medium">{t('workout.allExercisesDone')}</p>
+                  <p className="text-sm text-muted-foreground">{t('workout.confirmFinish')}</p>
+                </div>
+                <div className="flex gap-2">
+                  <Button variant="outline" className="flex-1" onClick={() => setShowFinishConfirm(false)}>
+                    {t('workout.keepGoing')}
+                  </Button>
+                  <Button variant="success" className="flex-1" onClick={handleConfirmFinish}>
+                    {t('workout.finishWorkout')}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </Dialog>
       )}
     </div>
   );
@@ -163,9 +347,11 @@ export function ActiveWorkout() {
 function ExerciseCard({
   exerciseLog,
   onSetLogged,
+  onExerciseCompleted,
 }: {
   exerciseLog: ExerciseLog;
-  onSetLogged: () => void;
+  onSetLogged: (restSeconds?: number) => void;
+  onExerciseCompleted: () => void;
 }) {
   const { t } = useTranslation();
   const { settings } = useUIStore();
@@ -223,7 +409,14 @@ function ExerciseCard({
       completedAt: new Date(),
     });
 
-    onSetLogged();
+    onSetLogged(plannedExercise?.restSeconds);
+
+    // Auto-advance if target sets reached
+    const targetSets = plannedExercise?.targetSets ?? 0;
+    if (targetSets > 0 && nextNumber >= targetSets) {
+      // Short delay so the user sees the set was added
+      setTimeout(() => onExerciseCompleted(), 600);
+    }
   };
 
   const handleUpdateSet = async (setId: string, updates: Partial<SetLog>) => {
@@ -315,7 +508,19 @@ function ExerciseCard({
           <Button variant="outline" size="sm" className="w-full" onClick={handleAddSet}>
             <Plus className="h-4 w-4 mr-1" />
             {t('workout.addSet')}
+            {plannedExercise && (
+              <span className="ml-1 text-muted-foreground">
+                ({setLogs?.length ?? 0}/{plannedExercise.targetSets})
+              </span>
+            )}
           </Button>
+
+          {exerciseLog.completedAt && (
+            <div className="flex items-center justify-center gap-1.5 text-xs text-success font-medium pt-1">
+              <Check className="h-3.5 w-3.5" />
+              {t('workout.exerciseComplete')}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -451,21 +656,61 @@ function WorkoutSummary({ workoutLogId, onClose }: { workoutLogId: string; onClo
   );
 
   const [stats, setStats] = useState({ totalSets: 0, totalVolume: 0 });
+  const [exerciseDetails, setExerciseDetails] = useState<Array<{
+    name: string;
+    setsDone: number;
+    targetSets: number;
+    duration: number;
+    volume: number;
+  }>>([]);
 
   useEffect(() => {
     if (!exerciseLogs) return;
     (async () => {
       let totalSets = 0;
       let totalVolume = 0;
+      const details: typeof exerciseDetails = [];
+
+      // Get workout to find planned exercises
+      const wl = await db.workoutLogs.get(workoutLogId);
+
       for (const el of exerciseLogs) {
         const sets = await db.setLogs.where('exerciseLogId').equals(el.id).toArray();
         const working = sets.filter((s) => !s.isWarmup);
         totalSets += working.length;
-        totalVolume += working.reduce((sum, s) => sum + s.weight * s.reps, 0);
+        const vol = working.reduce((sum, s) => sum + s.weight * s.reps, 0);
+        totalVolume += vol;
+
+        const exercise = await db.exercises.get(el.exerciseId);
+        const name = exercise
+          ? exercise.isCustom ? exercise.nameKey : t(exercise.nameKey)
+          : '...';
+
+        let targetSets = 0;
+        if (wl?.dayId) {
+          const pe = await db.plannedExercises
+            .where('dayId').equals(wl.dayId)
+            .and((p) => p.exerciseId === el.exerciseId)
+            .first();
+          targetSets = pe?.targetSets ?? 0;
+        }
+
+        const duration = el.startedAt && el.completedAt
+          ? el.completedAt.getTime() - el.startedAt.getTime()
+          : 0;
+
+        details.push({
+          name,
+          setsDone: working.length,
+          targetSets,
+          duration,
+          volume: vol,
+        });
       }
       setStats({ totalSets, totalVolume });
+      setExerciseDetails(details);
     })();
-  }, [exerciseLogs]);
+  }, [exerciseLogs, workoutLogId, t]);
 
   const duration = workoutLog?.startedAt && workoutLog?.completedAt
     ? workoutLog.completedAt.getTime() - workoutLog.startedAt.getTime()
@@ -499,6 +744,51 @@ function WorkoutSummary({ workoutLogId, onClose }: { workoutLogId: string; onClo
             </CardContent>
           </Card>
         </div>
+
+        {/* Per-exercise breakdown */}
+        {exerciseDetails.length > 0 && (
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-muted-foreground">{t('plans.exercises')}</h3>
+            {exerciseDetails.map((ex, i) => {
+              const isComplete = ex.targetSets > 0 ? ex.setsDone >= ex.targetSets : ex.setsDone > 0;
+              const isSkipped = ex.setsDone === 0;
+              return (
+                <Card key={i}>
+                  <CardContent className="p-3 flex items-center gap-3">
+                    <div className={`h-8 w-8 rounded-full flex items-center justify-center shrink-0 ${
+                      isSkipped ? 'bg-destructive/15' : isComplete ? 'bg-success/15' : 'bg-warning/15'
+                    }`}>
+                      {isSkipped ? (
+                        <X className="h-4 w-4 text-destructive" />
+                      ) : isComplete ? (
+                        <Check className="h-4 w-4 text-success" />
+                      ) : (
+                        <AlertTriangle className="h-4 w-4 text-warning" />
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate">{ex.name}</p>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                        {ex.targetSets > 0 && (
+                          <span>{ex.setsDone}/{ex.targetSets} {t('workout.totalSets').toLowerCase()}</span>
+                        )}
+                        {ex.targetSets === 0 && ex.setsDone > 0 && (
+                          <span>{ex.setsDone} {t('workout.totalSets').toLowerCase()}</span>
+                        )}
+                        {ex.duration > 0 && (
+                          <span>• {formatDuration(ex.duration)}</span>
+                        )}
+                        {ex.volume > 0 && (
+                          <span>• {convertWeight(ex.volume, settings.weightUnit).toLocaleString()} {settings.weightUnit}</span>
+                        )}
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        )}
 
         <Button className="w-full" size="lg" onClick={onClose}>
           {t('common.done')}

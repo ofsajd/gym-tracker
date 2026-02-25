@@ -33,7 +33,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   restTimerSeconds: 90,
   restTimerSound: true,
   restTimerVibrate: true,
-  pushNotifications: true,
+  pushNotifications: false,
 };
 
 function loadSettings(): AppSettings {

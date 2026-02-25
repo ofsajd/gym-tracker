@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Dumbbell, Clock, Calendar, Trophy } from 'lucide-react';
+import { Clock, Calendar, Trophy, Check, X, AlertTriangle } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Dialog, DialogHeader } from '@/components/ui/dialog';
 import { Badge } from '@/components/ui/badge';
@@ -40,6 +40,17 @@ export function WorkoutDetailDialog({ workout, onClose }: Props) {
     }
     return map;
   }, [exerciseLogs]);
+
+  // Look up planned exercises for target sets
+  const plannedExercises = useLiveQuery(async () => {
+    if (!workout.dayId) return {};
+    const pes = await db.plannedExercises.where('dayId').equals(workout.dayId).toArray();
+    const map: Record<string, number> = {};
+    for (const pe of pes) {
+      map[pe.exerciseId] = pe.targetSets;
+    }
+    return map;
+  }, [workout.dayId]);
 
   const duration =
     workout.completedAt && workout.startedAt
@@ -115,20 +126,51 @@ export function WorkoutDetailDialog({ workout, onClose }: Props) {
               : t(exercise.nameKey)
             : '...';
           const sets = setLogsByExercise?.[el.id] ?? [];
+          const workingSets = sets.filter((s) => !s.isWarmup);
           const exMuscles = exercise?.muscleGroupIds
             .map((mgId) => muscleGroups?.find((m) => m.id === mgId))
             .filter(Boolean) ?? [];
+
+          const targetSets = plannedExercises?.[el.exerciseId] ?? 0;
+          const isComplete = targetSets > 0 ? workingSets.length >= targetSets : workingSets.length > 0;
+          const isSkipped = workingSets.length === 0;
+          const exDuration = el.startedAt && el.completedAt
+            ? new Date(el.completedAt).getTime() - new Date(el.startedAt).getTime()
+            : null;
 
           return (
             <Card key={el.id}>
               <CardContent className="p-3 space-y-2">
                 <div>
                   <div className="flex items-center gap-2">
-                    <Dumbbell className="h-4 w-4 text-primary shrink-0" />
-                    <p className="text-sm font-semibold">{exName}</p>
+                    <div className={`h-6 w-6 rounded-full flex items-center justify-center shrink-0 ${
+                      isSkipped ? 'bg-destructive/15' : isComplete ? 'bg-success/15' : 'bg-warning/15'
+                    }`}>
+                      {isSkipped ? (
+                        <X className="h-3 w-3 text-destructive" />
+                      ) : isComplete ? (
+                        <Check className="h-3 w-3 text-success" />
+                      ) : (
+                        <AlertTriangle className="h-3 w-3 text-warning" />
+                      )}
+                    </div>
+                    <p className="text-sm font-semibold flex-1">{exName}</p>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                      {targetSets > 0 && (
+                        <span className={workingSets.length >= targetSets ? 'text-success' : 'text-warning'}>
+                          {workingSets.length}/{targetSets}
+                        </span>
+                      )}
+                      {exDuration && (
+                        <span className="flex items-center gap-0.5">
+                          <Clock className="h-3 w-3" />
+                          {formatDuration(exDuration)}
+                        </span>
+                      )}
+                    </div>
                   </div>
                   {exMuscles.length > 0 && (
-                    <div className="flex gap-1 mt-1 ml-6 flex-wrap">
+                    <div className="flex gap-1 mt-1 ml-8 flex-wrap">
                       {exMuscles.map((mg) => (
                         <Badge key={mg!.id} variant="secondary" className="text-[10px]">
                           {t(mg!.nameKey)}
@@ -139,7 +181,7 @@ export function WorkoutDetailDialog({ workout, onClose }: Props) {
                 </div>
 
                 {sets.length > 0 ? (
-                  <div className="ml-6 space-y-0.5">
+                  <div className="ml-8 space-y-0.5">
                     <div className="grid grid-cols-[24px_1fr_1fr_1fr] gap-2 text-[10px] text-muted-foreground uppercase tracking-wider">
                       <span>#</span>
                       <span>{t('common.weight')}</span>
@@ -165,9 +207,9 @@ export function WorkoutDetailDialog({ workout, onClose }: Props) {
                     ))}
                     {/* Best set indicator */}
                     {(() => {
-                      const workingSets = sets.filter((s) => !s.isWarmup);
-                      if (workingSets.length === 0) return null;
-                      const best = workingSets.reduce((a, b) =>
+                      const bestSets = sets.filter((s) => !s.isWarmup);
+                      if (bestSets.length === 0) return null;
+                      const best = bestSets.reduce((a, b) =>
                         a.weight * a.reps > b.weight * b.reps ? a : b
                       );
                       return (
@@ -181,7 +223,7 @@ export function WorkoutDetailDialog({ workout, onClose }: Props) {
                     })()}
                   </div>
                 ) : (
-                  <p className="text-xs text-muted-foreground ml-6">{t('common.noData')}</p>
+                  <p className="text-xs text-muted-foreground ml-8">{t('common.noData')}</p>
                 )}
               </CardContent>
             </Card>

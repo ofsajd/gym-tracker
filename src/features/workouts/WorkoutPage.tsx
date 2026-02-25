@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Play, ChevronRight, Dumbbell, Plus, Calendar, Clock } from 'lucide-react';
+import { Play, ChevronRight, Dumbbell, Plus, Calendar, Clock, Check } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,12 +16,12 @@ import type { WorkoutLog } from '@/types/models';
 export function WorkoutPage() {
   const { t } = useTranslation();
   const { activeWorkout, setActiveWorkout } = useUIStore();
+  const [showWeekPicker, setShowWeekPicker] = useState(false);
   const [showDayPicker, setShowDayPicker] = useState(false);
+  const [pendingWeek, setPendingWeek] = useState<number | null>(null);
   const [selectedWorkout, setSelectedWorkout] = useState<
     (WorkoutLog & { dayName?: string; planName?: string }) | null
   >(null);
-  const [showWeekPicker, setShowWeekPicker] = useState(false);
-  const [pendingDayId, setPendingDayId] = useState<string | null>(null);
 
   const activePlan = useLiveQuery(() => db.trainingPlans.filter((p) => p.isActive).first());
   const days = useLiveQuery(
@@ -29,49 +29,67 @@ export function WorkoutPage() {
     [activePlan?.id]
   );
 
+  // All workout logs for active plan — used for completion indicators
+  const planLogs = useLiveQuery(
+    () =>
+      activePlan
+        ? db.workoutLogs.where('planId').equals(activePlan.id).toArray()
+        : [],
+    [activePlan?.id]
+  );
+
   // Recent workouts (last 10)
   const recentWorkouts = useLiveQuery(async () => {
     const logs = await db.workoutLogs.orderBy('startedAt').reverse().limit(10).toArray();
-    // Enrich with day names
     const enriched = await Promise.all(
       logs.map(async (log) => {
         const day = log.dayId ? await db.trainingDays.get(log.dayId) : null;
         const plan = log.planId ? await db.trainingPlans.get(log.planId) : null;
-        return { ...log, dayName: day?.name, planName: plan?.name };
+        // Check if workout is partial (has exercises with 0 sets)
+        let isPartial = false;
+        if (log.completedAt) {
+          const eLogs = await db.exerciseLogs.where('workoutLogId').equals(log.id).toArray();
+          for (const el of eLogs) {
+            const setCount = await db.setLogs.where('exerciseLogId').equals(el.id).count();
+            if (setCount === 0) { isPartial = true; break; }
+          }
+        }
+        return { ...log, dayName: day?.name, planName: plan?.name, isPartial };
       })
     );
     return enriched;
   });
 
-  // Determine next week number and completed weeks info
+  // Determine next week number
   const [nextWeek, setNextWeek] = useState(1);
 
   useEffect(() => {
-    if (!activePlan) return;
-    db.workoutLogs
-      .where('planId')
-      .equals(activePlan.id)
-      .toArray()
-      .then((logs) => {
-        if (logs.length === 0) {
-          setNextWeek(1);
-        } else {
-          const maxWeek = Math.max(...logs.map((l) => l.weekNumber ?? 1));
-          const weekLogs = logs.filter((l) => l.weekNumber === maxWeek && l.completedAt);
-          const allDone = !!(days && weekLogs.length >= days.length);
-          if (allDone) {
-            setNextWeek(Math.min(maxWeek + 1, activePlan.weekCount));
-          } else {
-            setNextWeek(maxWeek);
-          }
-        }
-      });
-  }, [activePlan, days]);
+    if (!activePlan || !planLogs) return;
+    if (planLogs.length === 0) {
+      setNextWeek(1);
+    } else {
+      const maxWeek = Math.max(...planLogs.map((l) => l.weekNumber ?? 1));
+      const weekLogs = planLogs.filter((l) => l.weekNumber === maxWeek && l.completedAt);
+      const allDone = !!(days && weekLogs.length >= days.length);
+      if (allDone) {
+        setNextWeek(Math.min(maxWeek + 1, activePlan.weekCount));
+      } else {
+        setNextWeek(maxWeek);
+      }
+    }
+  }, [activePlan, days, planLogs]);
 
-  const handleDaySelected = (dayId: string) => {
-    setPendingDayId(dayId);
-    setShowDayPicker(false);
-    setShowWeekPicker(true);
+  // Completion helpers
+  const getWeekCompletedDays = (week: number) =>
+    (planLogs ?? []).filter((l) => l.weekNumber === week && l.completedAt).length;
+
+  const isDayDoneInWeek = (dayId: string, week: number) =>
+    (planLogs ?? []).some((l) => l.dayId === dayId && l.weekNumber === week && l.completedAt);
+
+  const handleWeekSelected = (week: number) => {
+    setPendingWeek(week);
+    setShowWeekPicker(false);
+    setShowDayPicker(true);
   };
 
   const startWorkout = useCallback(
@@ -101,9 +119,9 @@ export function WorkoutPage() {
       }
 
       setActiveWorkout({ isActive: true, workoutLogId: workoutId, currentExerciseIndex: 0 });
-      setShowDayPicker(false);
       setShowWeekPicker(false);
-      setPendingDayId(null);
+      setShowDayPicker(false);
+      setPendingWeek(null);
     },
     [activePlan, setActiveWorkout]
   );
@@ -137,7 +155,7 @@ export function WorkoutPage() {
             <Button
               size="lg"
               className="w-full h-14 text-base"
-              onClick={() => setShowDayPicker(true)}
+              onClick={() => setShowWeekPicker(true)}
             >
               <Plus className="h-5 w-5 mr-2" />
               {t('workout.newWorkout')}
@@ -170,9 +188,11 @@ export function WorkoutPage() {
                     <CardContent className="p-3 flex items-center gap-3">
                       <div
                         className={`h-10 w-10 rounded-lg flex items-center justify-center ${
-                          w.completedAt
+                          w.completedAt && !w.isPartial
                             ? 'bg-success/10 text-success'
-                            : 'bg-warning/10 text-warning'
+                            : w.completedAt && w.isPartial
+                              ? 'bg-warning/10 text-warning'
+                              : 'bg-muted/30 text-muted-foreground'
                         }`}
                       >
                         <Dumbbell className="h-5 w-5" />
@@ -190,6 +210,12 @@ export function WorkoutPage() {
                                 <Clock className="h-3 w-3" />
                                 {formatDuration(duration)}
                               </span>
+                            </>
+                          )}
+                          {w.isPartial && (
+                            <>
+                              <span>•</span>
+                              <span className="text-warning">{t('workout.partial')}</span>
                             </>
                           )}
                           {w.planName && (
@@ -215,61 +241,23 @@ export function WorkoutPage() {
         )}
       </div>
 
-      {/* Day picker dialog */}
-      {showDayPicker && (
-        <Dialog open onClose={() => setShowDayPicker(false)}>
-          <DialogHeader onClose={() => setShowDayPicker(false)}>
-            {t('workout.selectDay')}
-          </DialogHeader>
-
-          <div className="space-y-2 py-2">
-            {days?.map((day) => (
-              <button
-                key={day.id}
-                onClick={() => handleDaySelected(day.id)}
-                className="w-full flex items-center justify-between gap-3 p-4 rounded-lg hover:bg-accent active:bg-accent/80 text-left transition-colors touch-manipulation"
-              >
-                <div className="flex items-center gap-3">
-                  <div className="h-10 w-10 rounded-lg bg-primary/10 flex items-center justify-center">
-                    <Play className="h-5 w-5 text-primary" />
-                  </div>
-                  <div>
-                    <p className="font-medium">{day.name}</p>
-                    <DayExerciseCount dayId={day.id} />
-                  </div>
-                </div>
-                <ChevronRight className="h-5 w-5 text-muted-foreground" />
-              </button>
-            ))}
-          </div>
-        </Dialog>
-      )}
-
-      {/* Week picker dialog */}
-      {showWeekPicker && activePlan && pendingDayId && (
-        <Dialog
-          open
-          onClose={() => {
-            setShowWeekPicker(false);
-            setPendingDayId(null);
-          }}
-        >
-          <DialogHeader
-            onClose={() => {
-              setShowWeekPicker(false);
-              setPendingDayId(null);
-            }}
-          >
+      {/* Week picker dialog (Step 1) */}
+      {showWeekPicker && activePlan && (
+        <Dialog open onClose={() => setShowWeekPicker(false)}>
+          <DialogHeader onClose={() => setShowWeekPicker(false)}>
             {t('workout.selectWeek')}
           </DialogHeader>
 
           <div className="space-y-2 py-2">
             {Array.from({ length: activePlan.weekCount }, (_, i) => i + 1).map((week) => {
               const isSuggested = week === nextWeek;
+              const completedDays = getWeekCompletedDays(week);
+              const totalDays = days?.length ?? 0;
+              const isWeekDone = totalDays > 0 && completedDays >= totalDays;
               return (
                 <button
                   key={week}
-                  onClick={() => startWorkout(pendingDayId, week)}
+                  onClick={() => handleWeekSelected(week)}
                   className={`w-full flex items-center justify-between gap-3 p-4 rounded-lg text-left transition-colors touch-manipulation ${
                     isSuggested
                       ? 'bg-primary/10 hover:bg-primary/20 ring-1 ring-primary/30'
@@ -279,20 +267,75 @@ export function WorkoutPage() {
                   <div className="flex items-center gap-3">
                     <div
                       className={`h-10 w-10 rounded-lg flex items-center justify-center font-bold ${
-                        isSuggested
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-secondary text-secondary-foreground'
+                        isWeekDone
+                          ? 'bg-success/20 text-success'
+                          : isSuggested
+                            ? 'bg-primary text-primary-foreground'
+                            : 'bg-secondary text-secondary-foreground'
                       }`}
                     >
-                      {week}
+                      {isWeekDone ? <Check className="h-5 w-5" /> : week}
                     </div>
                     <div>
                       <p className="font-medium">
                         {t('workout.weekNum', { week })}
                       </p>
-                      {isSuggested && (
+                      <p className="text-xs text-muted-foreground">
+                        {completedDays}/{totalDays} {t('workout.daysCompleted')}
+                      </p>
+                      {isSuggested && !isWeekDone && (
                         <p className="text-xs text-primary">{t('workout.suggestedWeek')}</p>
                       )}
+                    </div>
+                  </div>
+                  <ChevronRight className="h-5 w-5 text-muted-foreground" />
+                </button>
+              );
+            })}
+          </div>
+        </Dialog>
+      )}
+
+      {/* Day picker dialog (Step 2) */}
+      {showDayPicker && activePlan && pendingWeek !== null && (
+        <Dialog
+          open
+          onClose={() => {
+            setShowDayPicker(false);
+            setPendingWeek(null);
+          }}
+        >
+          <DialogHeader
+            onClose={() => {
+              setShowDayPicker(false);
+              setPendingWeek(null);
+            }}
+          >
+            {t('workout.selectDay')} — {t('workout.weekNum', { week: pendingWeek })}
+          </DialogHeader>
+
+          <div className="space-y-2 py-2">
+            {days?.map((day) => {
+              const done = isDayDoneInWeek(day.id, pendingWeek);
+              return (
+                <button
+                  key={day.id}
+                  onClick={() => startWorkout(day.id, pendingWeek)}
+                  className="w-full flex items-center justify-between gap-3 p-4 rounded-lg hover:bg-accent active:bg-accent/80 text-left transition-colors touch-manipulation"
+                >
+                  <div className="flex items-center gap-3">
+                    <div
+                      className={`h-10 w-10 rounded-lg flex items-center justify-center ${
+                        done
+                          ? 'bg-success/20 text-success'
+                          : 'bg-primary/10 text-primary'
+                      }`}
+                    >
+                      {done ? <Check className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+                    </div>
+                    <div>
+                      <p className="font-medium">{day.name}</p>
+                      <DayExerciseCount dayId={day.id} />
                     </div>
                   </div>
                   <ChevronRight className="h-5 w-5 text-muted-foreground" />

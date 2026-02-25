@@ -6,10 +6,12 @@ export type MuscleGroup = {
 export type Exercise = {
   id: string;
   nameKey: string; // i18n key for built-in, raw name for custom
-  muscleGroupIds: string[];
+  muscleGroupIds: string[]; // first element is the primary muscle group
   isCustom: boolean;
   isFavorite?: boolean;
   notes?: string;
+  description?: string; // for custom exercises
+  videoUrl?: string; // optional tutorial video link
 };
 
 export type TrainingPlan = {
@@ -57,6 +59,8 @@ export type ExerciseLog = {
   workoutLogId: string;
   exerciseId: string;
   order: number;
+  startedAt?: Date;
+  completedAt?: Date;
 };
 
 export type SetLog = {

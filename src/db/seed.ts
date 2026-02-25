@@ -1,4 +1,5 @@
 import { db } from './schema';
+import { exerciseVideoUrls } from './exercise-videos';
 import type { MuscleGroup, Exercise } from '@/types/models';
 
 const MUSCLE_GROUPS: MuscleGroup[] = [
@@ -39,7 +40,7 @@ const EXERCISES: Exercise[] = [
   { id: 'ex-seated-row', nameKey: 'exercises.seatedRow', muscleGroupIds: ['mg-back', 'mg-biceps'], isCustom: false },
   { id: 'ex-cable-row', nameKey: 'exercises.cableRow', muscleGroupIds: ['mg-back'], isCustom: false },
   { id: 'ex-t-bar-row', nameKey: 'exercises.tBarRow', muscleGroupIds: ['mg-back', 'mg-biceps'], isCustom: false },
-  { id: 'ex-face-pull', nameKey: 'exercises.facePull', muscleGroupIds: ['mg-back', 'mg-shoulders'], isCustom: false },
+  { id: 'ex-face-pull', nameKey: 'exercises.facePull', muscleGroupIds: ['mg-shoulders', 'mg-back'], isCustom: false },
 
   // Shoulders
   { id: 'ex-ohp', nameKey: 'exercises.overheadPress', muscleGroupIds: ['mg-shoulders', 'mg-triceps'], isCustom: false },
@@ -161,6 +162,12 @@ export async function seedDatabase() {
     await db.muscleGroups.bulkPut(MUSCLE_GROUPS);
   }
 
+  // Apply video URLs from the lookup table
+  const exercisesWithVideos = EXERCISES.map((ex) => ({
+    ...ex,
+    videoUrl: exerciseVideoUrls[ex.id] ?? ex.videoUrl,
+  }));
+
   // Always upsert built-in exercises so new ones are added on update
-  await db.exercises.bulkPut(EXERCISES);
+  await db.exercises.bulkPut(exercisesWithVideos);
 }

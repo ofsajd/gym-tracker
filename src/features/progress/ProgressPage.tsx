@@ -1,7 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { TrendingUp, BarChart3 } from 'lucide-react';
+import { TrendingUp, BarChart3, Flame, Dumbbell, Trophy, Calculator, ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   LineChart,
   Line,
@@ -17,11 +17,24 @@ import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Select } from '@/components/ui/select';
+import { Dialog, DialogHeader } from '@/components/ui/dialog';
 import { PageHeader } from '@/components/layout/PageHeader';
 import { useUIStore } from '@/stores/ui-store';
-import { convertWeight } from '@/lib/utils';
-import { format } from 'date-fns';
-import { pl, enUS } from 'date-fns/locale';
+import { convertWeight, formatDuration } from '@/lib/utils';
+import {
+  format,
+  subDays,
+  startOfDay,
+  startOfMonth,
+  endOfMonth,
+  addMonths,
+  subMonths,
+  eachDayOfInterval,
+  isSameDay,
+  isSameMonth,
+  getDay,
+} from 'date-fns';
+import { pl, enUS, type Locale } from 'date-fns/locale';
 
 type ChartPoint = {
   date: string;
@@ -31,6 +44,13 @@ type ChartPoint = {
 };
 
 type PeriodOption = '30' | '90' | '180' | 'all';
+
+// Epley formula: 1RM = w × (1 + r / 30)
+function estimate1RM(weight: number, reps: number): number {
+  if (reps <= 0 || weight <= 0) return 0;
+  if (reps === 1) return weight;
+  return Math.round(weight * (1 + reps / 30) * 10) / 10;
+}
 
 export function ProgressPage() {
   const { t } = useTranslation();
@@ -45,11 +65,100 @@ export function ProgressPage() {
   const muscleGroups = useLiveQuery(() => db.muscleGroups.toArray());
   const dateLocale = settings.language === 'pl' ? pl : enUS;
 
-  // Build exercise options
-  const exerciseOptions = (exercises ?? []).map((ex) => ({
-    value: ex.id,
-    label: ex.isCustom ? ex.nameKey : t(ex.nameKey),
-  })).sort((a, b) => a.label.localeCompare(b.label));
+  // All completed workouts for overview stats
+  const completedWorkouts = useLiveQuery(
+    () => db.workoutLogs.filter((w) => !!w.completedAt).toArray()
+  );
+
+  // Overall stats
+  const totalWorkouts = completedWorkouts?.length ?? 0;
+
+  const [totalVolume, setTotalVolume] = useState(0);
+  useEffect(() => {
+    if (!completedWorkouts || completedWorkouts.length === 0) {
+      setTotalVolume(0);
+      return;
+    }
+    (async () => {
+      const workoutIds = completedWorkouts.map((w) => w.id);
+      let vol = 0;
+      for (const wId of workoutIds) {
+        const eLogs = await db.exerciseLogs.where('workoutLogId').equals(wId).toArray();
+        for (const el of eLogs) {
+          const sets = await db.setLogs.where('exerciseLogId').equals(el.id).toArray();
+          vol += sets.filter((s) => !s.isWarmup).reduce((sum, s) => sum + s.weight * s.reps, 0);
+        }
+      }
+      setTotalVolume(vol);
+    })();
+  }, [completedWorkouts]);
+
+  // Streak calculation (consecutive days with workouts, going back from today)
+  const streak = useMemo(() => {
+    if (!completedWorkouts || completedWorkouts.length === 0) return 0;
+    const workoutDays = new Set(
+      completedWorkouts.map((w) => startOfDay(w.completedAt!).getTime())
+    );
+    let count = 0;
+    let day = startOfDay(new Date());
+    // If no workout today, start from yesterday
+    if (!workoutDays.has(day.getTime())) {
+      day = subDays(day, 1);
+    }
+    while (workoutDays.has(day.getTime())) {
+      count++;
+      day = subDays(day, 1);
+    }
+    return count;
+  }, [completedWorkouts]);
+
+  // Monthly calendar state
+  const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()));
+  const [selectedDay, setSelectedDay] = useState<Date | null>(null);
+
+  // Build month grid with workout day info
+  const workoutDaySet = useMemo(() => {
+    return new Set(
+      (completedWorkouts ?? []).map((w) => startOfDay(w.completedAt!).getTime())
+    );
+  }, [completedWorkouts]);
+
+  const calendarGrid = useMemo(() => {
+    const monthStart = startOfMonth(calendarMonth);
+    const monthEnd = endOfMonth(calendarMonth);
+    const daysInMonth = eachDayOfInterval({ start: monthStart, end: monthEnd });
+    const today = startOfDay(new Date());
+
+    // getDay returns 0=Sunday. We want Monday=0. So shift: (getDay + 6) % 7
+    const startDayOfWeek = (getDay(monthStart) + 6) % 7;
+
+    // Pad the start with nulls for alignment
+    const grid: (null | { date: Date; hasWorkout: boolean; isToday: boolean; inMonth: boolean })[] = [];
+    for (let i = 0; i < startDayOfWeek; i++) {
+      grid.push(null);
+    }
+    for (const d of daysInMonth) {
+      grid.push({
+        date: d,
+        hasWorkout: workoutDaySet.has(d.getTime()),
+        isToday: isSameDay(d, today),
+        inMonth: true,
+      });
+    }
+    // Pad end to fill last row
+    while (grid.length % 7 !== 0) {
+      grid.push(null);
+    }
+    return grid;
+  }, [calendarMonth, workoutDaySet]);
+
+  // Exercise options
+  const exerciseOptions = (exercises ?? [])
+    .map((ex) => ({
+      value: ex.id,
+      label: ex.isCustom ? ex.nameKey : t(ex.nameKey),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label));
 
   const muscleOptions = [
     { value: '', label: t('progress.selectMuscle') },
@@ -59,7 +168,6 @@ export function ProgressPage() {
     })),
   ];
 
-  // Filter exercises by muscle group
   const filteredExerciseOptions = selectedMuscle
     ? exerciseOptions.filter((opt) => {
         const ex = exercises?.find((e) => e.id === opt.value);
@@ -93,22 +201,18 @@ export function ProgressPage() {
         if (!workout?.completedAt) continue;
         if (fromDate && workout.completedAt < fromDate) continue;
 
-        const sets = await db.setLogs
-          .where('exerciseLogId')
-          .equals(el.id)
-          .toArray();
-
+        const sets = await db.setLogs.where('exerciseLogId').equals(el.id).toArray();
         const workingSets = sets.filter((s) => !s.isWarmup);
         if (workingSets.length === 0) continue;
 
-        const maxWeight = Math.max(...workingSets.map((s) => s.weight));
-        const totalVolume = workingSets.reduce((sum, s) => sum + s.weight * s.reps, 0);
+        const maxW = Math.max(...workingSets.map((s) => s.weight));
+        const totalVol = workingSets.reduce((sum, s) => sum + s.weight * s.reps, 0);
         const totalReps = workingSets.reduce((sum, s) => sum + s.reps, 0);
 
         points.push({
           date: format(workout.completedAt, 'dd MMM', { locale: dateLocale }),
-          weight: convertWeight(maxWeight, settings.weightUnit),
-          volume: convertWeight(totalVolume, settings.weightUnit),
+          weight: convertWeight(maxW, settings.weightUnit),
+          volume: convertWeight(totalVol, settings.weightUnit),
           reps: totalReps,
         });
       }
@@ -120,16 +224,36 @@ export function ProgressPage() {
     loadData();
   }, [selectedExerciseId, period, settings.weightUnit, dateLocale]);
 
-  // Stats
+  // Exercise-specific stats
   const maxWeight = chartData.length > 0 ? Math.max(...chartData.map((p) => p.weight)) : 0;
   const avgVolume =
     chartData.length > 0
       ? Math.round(chartData.reduce((sum, p) => sum + p.volume, 0) / chartData.length)
       : 0;
 
-  const workoutCount = useLiveQuery(
-    () => db.workoutLogs.filter((w) => !!w.completedAt).count()
-  );
+  // 1RM estimate from best set in chart data
+  const [best1RM, setBest1RM] = useState(0);
+  useEffect(() => {
+    if (!selectedExerciseId) {
+      setBest1RM(0);
+      return;
+    }
+    (async () => {
+      const eLogs = await db.exerciseLogs
+        .where('exerciseId')
+        .equals(selectedExerciseId)
+        .toArray();
+      let best = 0;
+      for (const el of eLogs) {
+        const sets = await db.setLogs.where('exerciseLogId').equals(el.id).toArray();
+        for (const s of sets.filter((s) => !s.isWarmup)) {
+          const est = estimate1RM(s.weight, s.reps);
+          if (est > best) best = est;
+        }
+      }
+      setBest1RM(best);
+    })();
+  }, [selectedExerciseId]);
 
   const periodOptions = [
     { value: '30', label: t('progress.last30days') },
@@ -143,29 +267,103 @@ export function ProgressPage() {
       <PageHeader title={t('progress.title')} />
 
       <div className="p-4 space-y-4">
-        {/* Stats cards */}
+        {/* Overview stats — always visible */}
         <div className="grid grid-cols-3 gap-3">
           <Card>
             <CardContent className="p-3 text-center">
-              <p className="text-xl font-bold">
-                {maxWeight > 0 ? maxWeight : '—'}
-              </p>
-              <p className="text-xs text-muted-foreground">{t('progress.maxWeight')}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-3 text-center">
-              <p className="text-xl font-bold">{avgVolume > 0 ? avgVolume : '—'}</p>
-              <p className="text-xs text-muted-foreground">{t('progress.avgVolume')}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="p-3 text-center">
-              <p className="text-xl font-bold">{workoutCount ?? 0}</p>
+              <Dumbbell className="h-5 w-5 mx-auto mb-1 text-primary" />
+              <p className="text-xl font-bold">{totalWorkouts}</p>
               <p className="text-xs text-muted-foreground">{t('progress.totalWorkouts')}</p>
             </CardContent>
           </Card>
+          <Card>
+            <CardContent className="p-3 text-center">
+              <Trophy className="h-5 w-5 mx-auto mb-1 text-warning" />
+              <p className="text-xl font-bold">
+                {convertWeight(totalVolume, settings.weightUnit).toLocaleString()}
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {t('progress.totalVolAll')} ({settings.weightUnit})
+              </p>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-3 text-center">
+              <Flame className="h-5 w-5 mx-auto mb-1 text-destructive" />
+              <p className="text-xl font-bold">{streak}</p>
+              <p className="text-xs text-muted-foreground">{t('progress.streak')}</p>
+            </CardContent>
+          </Card>
         </div>
+
+        {/* Monthly calendar */}
+        <Card>
+          <CardContent className="p-3 space-y-2">
+            {/* Month navigation */}
+            <div className="flex items-center justify-between">
+              <Button variant="ghost" size="icon-sm" onClick={() => setCalendarMonth((m) => subMonths(m, 1))}>
+                <ChevronLeft className="h-5 w-5" />
+              </Button>
+              <span className="text-sm font-semibold capitalize">
+                {format(calendarMonth, 'LLLL yyyy', { locale: dateLocale })}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setCalendarMonth((m) => addMonths(m, 1))}
+                disabled={isSameMonth(calendarMonth, new Date())}
+              >
+                <ChevronRight className="h-5 w-5" />
+              </Button>
+            </div>
+
+            {/* Day names header */}
+            <div className="grid grid-cols-7 gap-1 text-center">
+              {(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const).map((day) => (
+                <span key={day} className="text-[10px] font-medium text-muted-foreground">
+                  {t(`progress.day_${day}`)}
+                </span>
+              ))}
+            </div>
+
+            {/* Calendar grid */}
+            <div className="grid grid-cols-7 gap-1">
+              {calendarGrid.map((cell, i) =>
+                cell === null ? (
+                  <div key={i} className="aspect-square" />
+                ) : (
+                  <button
+                    key={i}
+                    onClick={() => cell.hasWorkout && setSelectedDay(cell.date)}
+                    className={`aspect-square rounded-md flex items-center justify-center text-[10px] font-mono transition-colors touch-manipulation ${
+                      cell.hasWorkout
+                        ? 'bg-primary text-primary-foreground cursor-pointer active:bg-primary/80'
+                        : cell.isToday
+                          ? 'ring-1 ring-primary text-foreground'
+                          : 'bg-secondary/50 text-muted-foreground'
+                    }`}
+                  >
+                    {cell.date.getDate()}
+                  </button>
+                )
+              )}
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Day detail dialog */}
+        {selectedDay && (
+          <DayDetailDialog
+            date={selectedDay}
+            dateLocale={dateLocale}
+            onClose={() => setSelectedDay(null)}
+          />
+        )}
+
+        {/* Exercise analysis section */}
+        <h3 className="text-sm font-medium text-muted-foreground pt-2">
+          {t('progress.exerciseAnalysis')}
+        </h3>
 
         {/* Filters */}
         <div className="space-y-2">
@@ -189,25 +387,54 @@ export function ProgressPage() {
           />
         </div>
 
+        {/* Exercise-specific stats */}
+        {selectedExerciseId && chartData.length > 0 && (
+          <div className="grid grid-cols-3 gap-3">
+            <Card>
+              <CardContent className="p-3 text-center">
+                <p className="text-xl font-bold">{maxWeight > 0 ? maxWeight : '—'}</p>
+                <p className="text-xs text-muted-foreground">{t('progress.maxWeight')}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-3 text-center">
+                <p className="text-xl font-bold">{avgVolume > 0 ? avgVolume : '—'}</p>
+                <p className="text-xs text-muted-foreground">{t('progress.avgVolume')}</p>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="p-3 text-center">
+                <Calculator className="h-4 w-4 mx-auto mb-0.5 text-primary" />
+                <p className="text-xl font-bold">
+                  {best1RM > 0 ? convertWeight(best1RM, settings.weightUnit) : '—'}
+                </p>
+                <p className="text-xs text-muted-foreground">{t('progress.estimated1RM')}</p>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
         {/* View toggle */}
-        <div className="flex gap-2">
-          <Button
-            variant={view === 'chart' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => setView('chart')}
-          >
-            <TrendingUp className="h-4 w-4 mr-1" />
-            {t('progress.weightProgress')}
-          </Button>
-          <Button
-            variant={view === 'table' ? 'default' : 'outline'}
-            size="sm"
-            onClick={() => setView('table')}
-          >
-            <BarChart3 className="h-4 w-4 mr-1" />
-            {t('progress.history')}
-          </Button>
-        </div>
+        {selectedExerciseId && chartData.length > 0 && (
+          <div className="flex gap-2">
+            <Button
+              variant={view === 'chart' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setView('chart')}
+            >
+              <TrendingUp className="h-4 w-4 mr-1" />
+              {t('progress.weightProgress')}
+            </Button>
+            <Button
+              variant={view === 'table' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setView('table')}
+            >
+              <BarChart3 className="h-4 w-4 mr-1" />
+              {t('progress.history')}
+            </Button>
+          </div>
+        )}
 
         {/* Content */}
         {!selectedExerciseId ? (
@@ -225,7 +452,9 @@ export function ProgressPage() {
             {/* Weight chart */}
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">{t('progress.weightProgress')} ({settings.weightUnit})</CardTitle>
+                <CardTitle className="text-sm">
+                  {t('progress.weightProgress')} ({settings.weightUnit})
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="h-48">
@@ -259,7 +488,9 @@ export function ProgressPage() {
             {/* Volume chart */}
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-sm">{t('progress.volumeProgress')} ({settings.weightUnit})</CardTitle>
+                <CardTitle className="text-sm">
+                  {t('progress.volumeProgress')} ({settings.weightUnit})
+                </CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="h-48">
@@ -314,5 +545,152 @@ export function ProgressPage() {
         )}
       </div>
     </div>
+  );
+}
+
+/* Day detail dialog — shows workout stats for a specific day */
+function DayDetailDialog({
+  date,
+  dateLocale,
+  onClose,
+}: {
+  date: Date;
+  dateLocale: Locale;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const { settings } = useUIStore();
+
+  type DayExercise = {
+    name: string;
+    sets: number;
+    volume: number;
+    best: string;
+  };
+
+  const [stats, setStats] = useState<{
+    duration: number;
+    exercises: DayExercise[];
+    totalSets: number;
+    totalVolume: number;
+  } | null>(null);
+
+  useEffect(() => {
+    (async () => {
+      const dayStart = startOfDay(date);
+      const dayEnd = new Date(dayStart);
+      dayEnd.setDate(dayEnd.getDate() + 1);
+
+      // Find all workouts on this day
+      const allWorkouts = await db.workoutLogs.filter((w) => {
+        if (!w.completedAt) return false;
+        const d = startOfDay(w.completedAt);
+        return isSameDay(d, dayStart);
+      }).toArray();
+
+      if (allWorkouts.length === 0) {
+        setStats({ duration: 0, exercises: [], totalSets: 0, totalVolume: 0 });
+        return;
+      }
+
+      let totalDuration = 0;
+      let totalSets = 0;
+      let totalVolume = 0;
+      const exercises: DayExercise[] = [];
+
+      for (const workout of allWorkouts) {
+        if (workout.startedAt && workout.completedAt) {
+          totalDuration += workout.completedAt.getTime() - workout.startedAt.getTime();
+        }
+
+        const eLogs = await db.exerciseLogs.where('workoutLogId').equals(workout.id).sortBy('order');
+        for (const el of eLogs) {
+          const sets = await db.setLogs.where('exerciseLogId').equals(el.id).toArray();
+          const workingSets = sets.filter((s) => !s.isWarmup);
+          if (workingSets.length === 0) continue;
+
+          const exercise = await db.exercises.get(el.exerciseId);
+          const name = exercise
+            ? exercise.isCustom ? exercise.nameKey : t(exercise.nameKey)
+            : el.exerciseId;
+
+          const vol = workingSets.reduce((sum, s) => sum + s.weight * s.reps, 0);
+          const bestSet = workingSets.reduce(
+            (best, s) => (s.weight > best.weight ? s : best),
+            workingSets[0]
+          );
+
+          totalSets += workingSets.length;
+          totalVolume += vol;
+
+          exercises.push({
+            name,
+            sets: workingSets.length,
+            volume: vol,
+            best: `${convertWeight(bestSet.weight, settings.weightUnit)}${settings.weightUnit} × ${bestSet.reps}`,
+          });
+        }
+      }
+
+      setStats({ duration: totalDuration, exercises, totalSets, totalVolume });
+    })();
+  }, [date, settings.weightUnit, t]);
+
+  return (
+    <Dialog open onClose={onClose}>
+      <DialogHeader onClose={onClose}>
+        {format(date, 'd MMMM yyyy', { locale: dateLocale })}
+      </DialogHeader>
+      <div className="p-4 space-y-3">
+        {!stats ? (
+          <p className="text-center text-muted-foreground text-sm py-4">...</p>
+        ) : (
+          <>
+            {/* Day summary row */}
+            <div className="grid grid-cols-3 gap-2 text-center">
+              <div className="p-2 bg-secondary rounded-lg">
+                <p className="text-lg font-bold">{formatDuration(stats.duration)}</p>
+                <p className="text-[10px] text-muted-foreground">{t('workout.duration')}</p>
+              </div>
+              <div className="p-2 bg-secondary rounded-lg">
+                <p className="text-lg font-bold">{stats.totalSets}</p>
+                <p className="text-[10px] text-muted-foreground">{t('workout.totalSets')}</p>
+              </div>
+              <div className="p-2 bg-secondary rounded-lg">
+                <p className="text-lg font-bold">
+                  {convertWeight(stats.totalVolume, settings.weightUnit).toLocaleString()}
+                </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {t('workout.totalVolume')} ({settings.weightUnit})
+                </p>
+              </div>
+            </div>
+
+            {/* Exercise list */}
+            <div className="space-y-1.5">
+              {stats.exercises.map((ex, i) => (
+                <div key={i} className="flex items-center justify-between p-2 bg-secondary/50 rounded-lg">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium truncate">{ex.name}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {ex.sets} {t('workout.totalSets').toLowerCase()} • {t('workout.bestSet')}: {ex.best}
+                    </p>
+                  </div>
+                  <span className="text-xs font-mono text-muted-foreground shrink-0 ml-2">
+                    {convertWeight(ex.volume, settings.weightUnit).toLocaleString()} {settings.weightUnit}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {stats.exercises.length === 0 && (
+              <p className="text-center text-sm text-muted-foreground py-4">
+                {t('progress.noExerciseData')}
+              </p>
+            )}
+          </>
+        )}
+      </div>
+    </Dialog>
   );
 }
