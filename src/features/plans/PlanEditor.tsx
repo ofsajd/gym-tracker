@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { ArrowLeft, Plus, Trash2, ChevronDown, ChevronUp, MoveUp, MoveDown, Link2, Unlink2 } from 'lucide-react';
+import { ArrowLeft, Plus, Minus, Trash2, ChevronDown, ChevronUp, MoveUp, MoveDown, Link2, Unlink2 } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -487,6 +487,10 @@ function PlannedExerciseRow({
   const { t } = useTranslation();
   const ex = useLiveQuery(() => db.exercises.get(exercise.exerciseId), [exercise.exerciseId]);
 
+  // Local state for decimal-friendly weight inputs
+  const [localWeight, setLocalWeight] = useState(String(exercise.initialWeight ?? ''));
+  const [localProgression, setLocalProgression] = useState(String(exercise.defaultProgression ?? ''));
+
   const exerciseName = ex
     ? ex.isCustom
       ? ex.nameKey
@@ -495,79 +499,164 @@ function PlannedExerciseRow({
 
   const isLinkedToNext = !!(exercise.supersetGroup && nextExercise?.supersetGroup === exercise.supersetGroup);
 
-  return (
-    <div>
-      <div className={`flex items-center gap-2 py-2 ${isLinkedToNext ? '' : 'border-b border-border/50 last:border-0'}`}>
-      <div className="flex flex-col gap-0.5 shrink-0">
+  // Stepper helper for integer fields
+  const StepperInt = ({ label, value, onChange, min = 0, step = 1, placeholder }: {
+    label: string; value: number | undefined; onChange: (v: number | undefined) => void;
+    min?: number; step?: number; placeholder?: string;
+  }) => (
+    <div className="flex items-center justify-between gap-2">
+      <label className="text-xs text-muted-foreground shrink-0 w-24">{label}</label>
+      <div className="flex items-center gap-0.5">
         <button
-          className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 touch-manipulation"
-          onClick={onMoveUp}
-          disabled={isFirst}
+          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary text-muted-foreground active:bg-accent touch-manipulation"
+          onClick={() => onChange(Math.max(min, (value ?? 0) - step))}
         >
-          <MoveUp className="h-3 w-3" />
+          <Minus className="h-3.5 w-3.5" />
         </button>
+        <input
+          type="text"
+          inputMode="numeric"
+          value={value ?? ''}
+          onChange={(e) => {
+            const v = parseInt(e.target.value);
+            onChange(isNaN(v) ? undefined : v);
+          }}
+          className="w-12 h-8 text-center text-sm font-mono bg-secondary rounded-md px-0.5"
+          placeholder={placeholder}
+        />
         <button
-          className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 touch-manipulation"
-          onClick={onMoveDown}
-          disabled={isLast}
+          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary text-muted-foreground active:bg-accent touch-manipulation"
+          onClick={() => onChange((value ?? 0) + step)}
         >
-          <MoveDown className="h-3 w-3" />
+          <Plus className="h-3.5 w-3.5" />
         </button>
       </div>
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium truncate">{exerciseName}</p>
-        <div className="flex items-center gap-2 mt-1 flex-wrap">
-          <div className="flex items-center gap-1">
-            <label className="text-xs text-muted-foreground">{t('plans.targetSets')}</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={exercise.targetSets}
-              onChange={(e) => onUpdate({ targetSets: parseInt(e.target.value) || 0 })}
-              className="w-10 h-7 text-center text-sm bg-secondary rounded px-1"
-            />
+    </div>
+  );
+
+  // Stepper helper for decimal fields (weight, progression)
+  const StepperDecimal = ({ label, value, setValue, onCommit, step = 0.5, min = 0, placeholder }: {
+    label: string; value: string; setValue: (v: string) => void;
+    onCommit: (v: number | undefined) => void; step?: number; min?: number; placeholder?: string;
+  }) => (
+    <div className="flex items-center justify-between gap-2">
+      <label className="text-xs text-muted-foreground shrink-0 w-24">{label}</label>
+      <div className="flex items-center gap-0.5">
+        <button
+          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary text-muted-foreground active:bg-accent touch-manipulation"
+          onClick={() => {
+            const cur = parseFloat(value) || 0;
+            const next = Math.max(min, Math.round((cur - step) * 100) / 100);
+            setValue(String(next));
+            onCommit(next || undefined);
+          }}
+        >
+          <Minus className="h-3.5 w-3.5" />
+        </button>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={() => {
+            const v = parseFloat(value);
+            if (!isNaN(v) && v > 0) {
+              setValue(String(v));
+              onCommit(v);
+            } else {
+              setValue('');
+              onCommit(undefined);
+            }
+          }}
+          className="w-16 h-8 text-center text-sm font-mono bg-secondary rounded-md px-0.5"
+          placeholder={placeholder}
+        />
+        <button
+          className="h-8 w-8 flex items-center justify-center rounded-md bg-secondary text-muted-foreground active:bg-accent touch-manipulation"
+          onClick={() => {
+            const cur = parseFloat(value) || 0;
+            const next = Math.round((cur + step) * 100) / 100;
+            setValue(String(next));
+            onCommit(next);
+          }}
+        >
+          <Plus className="h-3.5 w-3.5" />
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className={`py-2 ${isLinkedToNext ? '' : 'border-b border-border/50 last:border-0'}`}>
+        {/* Header: name + move arrows + delete */}
+        <div className="flex items-center gap-2 mb-2">
+          <div className="flex flex-col gap-0.5 shrink-0">
+            <button
+              className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 touch-manipulation"
+              onClick={onMoveUp}
+              disabled={isFirst}
+            >
+              <MoveUp className="h-3 w-3" />
+            </button>
+            <button
+              className="h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:text-foreground disabled:opacity-30 touch-manipulation"
+              onClick={onMoveDown}
+              disabled={isLast}
+            >
+              <MoveDown className="h-3 w-3" />
+            </button>
           </div>
-          <div className="flex items-center gap-1">
-            <label className="text-xs text-muted-foreground">{t('plans.targetReps')}</label>
+          <p className="text-sm font-medium truncate flex-1 min-w-0">{exerciseName}</p>
+          <Button variant="ghost" size="icon-sm" onClick={onDelete}>
+            <Trash2 className="h-4 w-4 text-muted-foreground" />
+          </Button>
+        </div>
+
+        {/* Controls — one per row */}
+        <div className="space-y-1.5 pl-6">
+          <StepperInt
+            label={t('plans.targetSets')}
+            value={exercise.targetSets}
+            onChange={(v) => onUpdate({ targetSets: v ?? 0 })}
+            min={1}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs text-muted-foreground shrink-0 w-24">{t('plans.targetReps')}</label>
             <input
               type="text"
               value={exercise.targetReps}
               onChange={(e) => onUpdate({ targetReps: e.target.value })}
-              className="w-14 h-7 text-center text-sm bg-secondary rounded px-1"
+              className="w-16 h-8 text-center text-sm font-mono bg-secondary rounded-md px-0.5"
               placeholder="8-12"
             />
           </div>
-          <div className="flex items-center gap-1">
-            <label className="text-xs text-muted-foreground">{t('plans.initialWeight')}</label>
-            <input
-              type="text"
-              inputMode="decimal"
-              value={exercise.initialWeight ?? ''}
-              onChange={(e) => {
-                const val = parseFloat(e.target.value);
-                onUpdate({ initialWeight: isNaN(val) ? undefined : val });
-              }}
-              className="w-14 h-7 text-center text-sm bg-secondary rounded px-1"
-              placeholder="kg"
-            />
-          </div>
-          <div className="flex items-center gap-1">
-            <label className="text-xs text-muted-foreground">{t('plans.restTime')}</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={exercise.restSeconds ?? ''}
-              onChange={(e) => onUpdate({ restSeconds: parseInt(e.target.value) || undefined })}
-              className="w-12 h-7 text-center text-sm bg-secondary rounded px-1"
-              placeholder="90"
-            />
-          </div>
+          <StepperDecimal
+            label={t('plans.initialWeight')}
+            value={localWeight}
+            setValue={setLocalWeight}
+            onCommit={(v) => onUpdate({ initialWeight: v })}
+            step={exercise.defaultProgression || 2.5}
+            placeholder="kg"
+          />
+          <StepperDecimal
+            label={t('plans.progression')}
+            value={localProgression}
+            setValue={setLocalProgression}
+            onCommit={(v) => onUpdate({ defaultProgression: v })}
+            step={0.5}
+            placeholder="0.5"
+          />
+          <StepperInt
+            label={t('plans.restTime')}
+            value={exercise.restSeconds}
+            onChange={(v) => onUpdate({ restSeconds: v })}
+            step={15}
+            min={0}
+            placeholder="90"
+          />
         </div>
       </div>
-      <Button variant="ghost" size="icon-sm" onClick={onDelete}>
-        <Trash2 className="h-4 w-4 text-muted-foreground" />
-      </Button>
-    </div>
       {/* Superset link button between this and next exercise */}
       {!isLast && (
         <div className="flex justify-center -my-1">

@@ -56,7 +56,7 @@ export function ExercisePicker({ dayId, onClose }: Props) {
   };
 
   return (
-    <Dialog open onClose={onClose} className="max-h-[90vh]">
+    <Dialog open onClose={onClose} className="max-h-[90vh]" position="top">
       <DialogHeader onClose={onClose}>
         {t('plans.selectExercise')}
         {filtered && (

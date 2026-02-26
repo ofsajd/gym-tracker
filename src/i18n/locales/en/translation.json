@@ -213,6 +213,7 @@
     "targetSets": "Sets",
     "targetReps": "Reps",
     "initialWeight": "Starting weight",
+    "progression": "Progression",
     "restTime": "Rest (s)",
     "moveUp": "Move up",
     "moveDown": "Move down",

@@ -16,7 +16,8 @@ function getIncrement(exercise: Exercise): number {
 
 export async function getWeightRecommendation(
   exerciseId: string,
-  targetReps: string
+  targetReps: string,
+  customProgression?: number
 ): Promise<WeightRecommendation | null> {
   // Get exercise for muscle group info
   const exercise = await db.exercises.get(exerciseId);
@@ -64,7 +65,7 @@ export async function getWeightRecommendation(
   // Parse target reps range
   const [minReps, maxReps] = parseRepRange(targetReps);
   const lastWeight = workingSets[0].weight;
-  const increment = getIncrement(exercise);
+  const increment = customProgression && customProgression > 0 ? customProgression : getIncrement(exercise);
 
   // Check if all sets were completed within rep range
   const allInRange = workingSets.every((s) => s.reps >= minReps && s.reps <= maxReps);
@@ -89,7 +90,7 @@ export async function getWeightRecommendation(
     if (failedCount >= workingSets.length / 2) {
       // Failed more than half — deload
       return {
-        weight: Math.round((lastWeight * 0.9) / 2.5) * 2.5, // Round down to nearest 2.5
+        weight: Math.round((lastWeight * 0.9) / increment) * increment, // Round down to nearest increment
         direction: 'deload',
       };
     }

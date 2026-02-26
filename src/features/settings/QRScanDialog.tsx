@@ -6,6 +6,7 @@ import { Input } from '@/components/ui/input';
 import { db } from '@/db/schema';
 import { decompressPlanData, generateId } from '@/lib/utils';
 import { Camera } from 'lucide-react';
+import jsQR from 'jsqr';
 
 type Props = {
   open: boolean;
@@ -179,7 +180,33 @@ export function QRScanDialog({ open, onClose }: Props) {
           };
           requestAnimationFrame(scanFrame);
         } else {
-          setError(t('settings.qrNoCameraAccess'));
+          // Fallback: use jsQR with canvas
+          const canvas = document.createElement('canvas');
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+          const scanFrame = () => {
+            if (!videoRef.current || !streamRef.current || !ctx) return;
+            const video = videoRef.current;
+            if (video.readyState !== video.HAVE_ENOUGH_DATA) {
+              requestAnimationFrame(scanFrame);
+              return;
+            }
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height, {
+              inversionAttempts: 'dontInvert',
+            });
+            if (code && code.data && code.data.startsWith('GYM:')) {
+              handleQRDetected(code.data);
+              return;
+            }
+            if (streamRef.current) {
+              requestAnimationFrame(scanFrame);
+            }
+          };
+          requestAnimationFrame(scanFrame);
         }
       } catch {
         setError(t('settings.qrNoCameraAccess'));

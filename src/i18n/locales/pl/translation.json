@@ -216,6 +216,7 @@
     "targetSets": "Serie",
     "targetReps": "Powtórzenia",
     "initialWeight": "Ciężar startowy",
+    "progression": "Progresja",
     "restTime": "Przerwa (s)",
     "moveUp": "Przenieś wyżej",
     "moveDown": "Przenieś niżej",

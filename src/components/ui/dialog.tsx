@@ -7,9 +7,10 @@ type DialogProps = {
   onClose: () => void;
   children: React.ReactNode;
   className?: string;
+  position?: 'bottom' | 'top';
 };
 
-export function Dialog({ open, onClose, children, className }: DialogProps) {
+export function Dialog({ open, onClose, children, className, position = 'bottom' }: DialogProps) {
   React.useEffect(() => {
     if (open) {
       document.body.style.overflow = 'hidden';
@@ -24,7 +25,7 @@ export function Dialog({ open, onClose, children, className }: DialogProps) {
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center">
+    <div className={cn("fixed inset-0 z-50 flex justify-center", position === 'top' ? 'items-start pt-4 sm:pt-8' : 'items-end sm:items-center')}>
       <div className="fixed inset-0 bg-black/60" onClick={onClose} />
       <div
         className={cn(

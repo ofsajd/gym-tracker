@@ -46,6 +46,7 @@ export type PlannedExercise = {
   targetSets: number;
   targetReps: string; // e.g. "8-12"
   initialWeight?: number; // starting weight in kg for first workout
+  defaultProgression?: number; // weight increment per session in kg (e.g. 0.5)
   restSeconds?: number;
   notes?: string;
   supersetGroup?: number; // exercises with the same group number form a superset

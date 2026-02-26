@@ -401,9 +401,9 @@ function ExerciseCard({
   }, [exerciseLog.workoutLogId, exerciseLog.exerciseId]);
 
   useEffect(() => {
-    getWeightRecommendation(exerciseLog.exerciseId, plannedExercise?.targetReps ?? '8-12').then(setRecommendation);
+    getWeightRecommendation(exerciseLog.exerciseId, plannedExercise?.targetReps ?? '8-12', plannedExercise?.defaultProgression).then(setRecommendation);
     getLastSetsForExercise(exerciseLog.exerciseId).then(setLastSets);
-  }, [exerciseLog.exerciseId, plannedExercise?.targetReps]);
+  }, [exerciseLog.exerciseId, plannedExercise?.targetReps, plannedExercise?.defaultProgression]);
 
   const exerciseName = exercise
     ? exercise.isCustom
@@ -533,6 +533,10 @@ function ExerciseCard({
                 weightUnit={localUnit}
                 onUpdate={(updates) => handleUpdateSet(set.id, updates)}
                 onDelete={() => handleDeleteSet(set.id)}
+                weightStep={plannedExercise?.defaultProgression
+                  ? convertWeight(plannedExercise.defaultProgression, localUnit)
+                  : 2.5
+                }
               />
             ))}
           </div>
@@ -554,15 +558,28 @@ function ExerciseCard({
             }}
           />
 
-          <Button variant="outline" size="sm" className="w-full" onClick={handleAddSet}>
-            <Plus className="h-4 w-4 mr-1" />
-            {t('workout.addSet')}
-            {plannedExercise && (
-              <span className="ml-1 text-muted-foreground">
-                ({setLogs?.length ?? 0}/{plannedExercise.targetSets})
-              </span>
-            )}
-          </Button>
+          {(() => {
+            const workingSetsCount = setLogs?.filter((s) => !s.isWarmup).length ?? 0;
+            const targetSets = plannedExercise?.targetSets ?? 0;
+            const allSetsDone = targetSets > 0 && workingSetsCount >= targetSets;
+            return (
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
+                onClick={handleAddSet}
+                disabled={allSetsDone}
+              >
+                <Plus className="h-4 w-4 mr-1" />
+                {allSetsDone ? t('workout.exerciseComplete') : t('workout.addSet')}
+                {plannedExercise && (
+                  <span className="ml-1 text-muted-foreground">
+                    ({workingSetsCount}/{plannedExercise.targetSets})
+                  </span>
+                )}
+              </Button>
+            );
+          })()}
 
           {exerciseLog.completedAt && (
             <div className="flex items-center justify-center gap-1.5 text-xs text-success font-medium pt-1">
@@ -677,11 +694,13 @@ function SetRow({
   weightUnit,
   onUpdate,
   onDelete,
+  weightStep = 2.5,
 }: {
   set: SetLog;
   weightUnit: 'kg' | 'lbs';
   onUpdate: (updates: Partial<SetLog>) => void;
   onDelete: () => void;
+  weightStep?: number;
 }) {
   const { t } = useTranslation();
   const displayWeight = convertWeight(set.weight, weightUnit);
@@ -723,7 +742,7 @@ function SetRow({
         <button
           className="h-8 w-7 flex items-center justify-center rounded bg-secondary text-xs font-semibold active:bg-accent touch-manipulation"
           onClick={() => {
-            const newVal = Math.max(0, parseFloat(weightInput) - 2.5);
+            const newVal = Math.max(0, parseFloat(weightInput) - weightStep);
             setWeightInput(String(newVal));
             onUpdate({ weight: convertToKg(newVal, weightUnit) });
           }}
@@ -745,7 +764,7 @@ function SetRow({
         <button
           className="h-8 w-7 flex items-center justify-center rounded bg-secondary text-xs font-semibold active:bg-accent touch-manipulation"
           onClick={() => {
-            const newVal = parseFloat(weightInput) + 2.5;
+            const newVal = parseFloat(weightInput) + weightStep;
             setWeightInput(String(newVal));
             onUpdate({ weight: convertToKg(newVal, weightUnit) });
           }}
