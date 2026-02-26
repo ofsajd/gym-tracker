@@ -28,7 +28,6 @@ import { WorkoutDetailDialog } from '../workouts/WorkoutDetailDialog';
 import { convertWeight, formatDuration } from '@/lib/utils';
 import {
   format,
-  subDays,
   startOfDay,
   startOfMonth,
   endOfMonth,
@@ -38,6 +37,8 @@ import {
   isSameDay,
   isSameMonth,
   getDay,
+  startOfWeek,
+  subWeeks,
 } from 'date-fns';
 import { pl, enUS, type Locale } from 'date-fns/locale';
 
@@ -98,21 +99,24 @@ export function ProgressPage() {
     })();
   }, [completedWorkouts]);
 
-  // Streak calculation (consecutive days with workouts, going back from today)
+  // Streak calculation (consecutive weeks with at least 1 workout)
   const streak = useMemo(() => {
     if (!completedWorkouts || completedWorkouts.length === 0) return 0;
-    const workoutDays = new Set(
-      completedWorkouts.map((w) => startOfDay(w.completedAt!).getTime())
+    // Build set of week-start timestamps that have workouts
+    const workoutWeeks = new Set(
+      completedWorkouts.map((w) =>
+        startOfWeek(w.completedAt!, { weekStartsOn: 1 }).getTime()
+      )
     );
     let count = 0;
-    let day = startOfDay(new Date());
-    // If no workout today, start from yesterday
-    if (!workoutDays.has(day.getTime())) {
-      day = subDays(day, 1);
+    let week = startOfWeek(new Date(), { weekStartsOn: 1 });
+    // If current week has no workout yet, start from previous week
+    if (!workoutWeeks.has(week.getTime())) {
+      week = subWeeks(week, 1);
     }
-    while (workoutDays.has(day.getTime())) {
+    while (workoutWeeks.has(week.getTime())) {
       count++;
-      day = subDays(day, 1);
+      week = subWeeks(week, 1);
     }
     return count;
   }, [completedWorkouts]);
@@ -661,47 +665,47 @@ function DayDetailDialog({
               className="cursor-pointer active:scale-[0.98] transition-transform touch-manipulation"
               onClick={() => setSelectedWorkout(dw)}
             >
-              <CardContent className="p-3 flex items-center gap-3">
-                <div
-                  className={`h-10 w-10 rounded-lg flex items-center justify-center ${
-                    dw.isPartial
-                      ? 'bg-warning/10 text-warning'
-                      : 'bg-success/10 text-success'
-                  }`}
-                >
-                  <Dumbbell className="h-5 w-5" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium truncate">
-                    {dw.dayName ?? t('workout.title')}
-                  </p>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    {dw.duration > 0 && (
-                      <span className="flex items-center gap-0.5">
-                        <Clock className="h-3 w-3" />
-                        {formatDuration(dw.duration)}
-                      </span>
-                    )}
-                    <span>{dw.totalSets} {t('workout.totalSets').toLowerCase()}</span>
-                    <span>
-                      {convertWeight(dw.totalVolume, settings.weightUnit).toLocaleString()} {settings.weightUnit}
-                    </span>
-                    {dw.isPartial && (
-                      <span className="text-warning">{t('workout.partial')}</span>
+              <CardContent className="p-3 space-y-1.5">
+                <div className="flex items-center gap-2">
+                  <div
+                    className={`h-9 w-9 rounded-lg flex items-center justify-center shrink-0 ${
+                      dw.isPartial
+                        ? 'bg-warning/10 text-warning'
+                        : 'bg-success/10 text-success'
+                    }`}
+                  >
+                    <Dumbbell className="h-4 w-4" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium truncate">
+                      {dw.dayName ?? t('workout.title')}
+                    </p>
+                    {dw.planName && (
+                      <p className="text-[10px] text-muted-foreground truncate">{dw.planName}</p>
                     )}
                   </div>
+                  {dw.workout.rating && (
+                    <span className="text-xs text-warning shrink-0">
+                      {'★'.repeat(dw.workout.rating)}
+                    </span>
+                  )}
+                  <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                 </div>
-                {dw.planName && (
-                  <span className="text-[10px] text-muted-foreground shrink-0 max-w-20 truncate">
-                    {dw.planName}
+                <div className="flex items-center gap-3 text-xs text-muted-foreground pl-11">
+                  {dw.duration > 0 && (
+                    <span className="flex items-center gap-0.5">
+                      <Clock className="h-3 w-3" />
+                      {formatDuration(dw.duration)}
+                    </span>
+                  )}
+                  <span>{dw.totalSets} {t('workout.totalSets').toLowerCase()}</span>
+                  <span>
+                    {convertWeight(dw.totalVolume, settings.weightUnit).toLocaleString()} {settings.weightUnit}
                   </span>
-                )}
-                {dw.workout.rating && (
-                  <span className="text-xs text-warning shrink-0">
-                    {'★'.repeat(dw.workout.rating)}
-                  </span>
-                )}
-                <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
+                  {dw.isPartial && (
+                    <span className="text-warning">{t('workout.partial')}</span>
+                  )}
+                </div>
               </CardContent>
             </Card>
           ))

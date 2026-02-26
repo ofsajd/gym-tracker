@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { Play, ChevronRight, Dumbbell, Plus, Calendar, Clock, Check, RotateCcw, AlertTriangle } from 'lucide-react';
+import { Play, ChevronRight, Dumbbell, Plus, Calendar, Clock, Check, RotateCcw, AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
 import { db } from '@/db/schema';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
@@ -16,7 +16,7 @@ import type { WorkoutLog } from '@/types/models';
 
 export function WorkoutPage() {
   const { t } = useTranslation();
-  const { activeWorkout, setActiveWorkout } = useUIStore();
+  const { activeWorkout, setActiveWorkout, clearActiveWorkout } = useUIStore();
   const [showWeekPicker, setShowWeekPicker] = useState(false);
   const [showDayPicker, setShowDayPicker] = useState(false);
   const [pendingWeek, setPendingWeek] = useState<number | null>(null);
@@ -26,6 +26,52 @@ export function WorkoutPage() {
   const [showReadiness, setShowReadiness] = useState(false);
   const [pendingStart, setPendingStart] = useState<{ dayId: string; weekNumber: number } | null>(null);
   const [pendingRepeat, setPendingRepeat] = useState(false);
+  const [unfinishedWorkout, setUnfinishedWorkout] = useState<WorkoutLog | null>(null);
+
+  // Detect unfinished workouts on mount (started but never completed, and not currently active)
+  useEffect(() => {
+    if (activeWorkout.isActive) return;
+    (async () => {
+      const allLogs = await db.workoutLogs.orderBy('startedAt').reverse().toArray();
+      const unfinished = allLogs.find((wl) => !wl.completedAt);
+      if (unfinished) {
+        setUnfinishedWorkout(unfinished);
+      }
+    })();
+  }, [activeWorkout.isActive]);
+
+  const handleResumeWorkout = useCallback(async () => {
+    if (!unfinishedWorkout) return;
+    // Restore active workout state — find the first uncompleted exercise
+    const eLogs = await db.exerciseLogs
+      .where('workoutLogId')
+      .equals(unfinishedWorkout.id)
+      .sortBy('order');
+    let resumeIndex = 0;
+    for (let i = 0; i < eLogs.length; i++) {
+      if (!eLogs[i].completedAt) {
+        resumeIndex = i;
+        break;
+      }
+    }
+    setActiveWorkout({ isActive: true, workoutLogId: unfinishedWorkout.id, currentExerciseIndex: resumeIndex });
+    setUnfinishedWorkout(null);
+  }, [unfinishedWorkout, setActiveWorkout]);
+
+  const handleDiscardUnfinished = useCallback(async () => {
+    if (!unfinishedWorkout) return;
+    const eLogs = await db.exerciseLogs
+      .where('workoutLogId')
+      .equals(unfinishedWorkout.id)
+      .toArray();
+    for (const el of eLogs) {
+      await db.setLogs.where('exerciseLogId').equals(el.id).delete();
+    }
+    await db.exerciseLogs.where('workoutLogId').equals(unfinishedWorkout.id).delete();
+    await db.workoutLogs.delete(unfinishedWorkout.id);
+    setUnfinishedWorkout(null);
+    clearActiveWorkout();
+  }, [unfinishedWorkout, clearActiveWorkout]);
 
   const activePlan = useLiveQuery(() => db.trainingPlans.filter((p) => p.isActive).first());
   const days = useLiveQuery(
@@ -489,6 +535,42 @@ export function WorkoutPage() {
           onSubmit={handleReadinessSubmit}
           onSkip={handleReadinessSkip}
         />
+      )}
+
+      {/* Unfinished workout recovery dialog */}
+      {unfinishedWorkout && (
+        <Dialog open onClose={() => setUnfinishedWorkout(null)}>
+          <DialogHeader onClose={() => setUnfinishedWorkout(null)}>
+            {t('workout.unfinishedWorkout')}
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 p-3 rounded-lg bg-warning/10 border border-warning/20">
+              <AlertTriangle className="h-5 w-5 text-warning shrink-0 mt-0.5" />
+              <p className="text-sm">
+                {t('workout.unfinishedWorkoutDesc', {
+                  date: new Date(unfinishedWorkout.startedAt).toLocaleString(),
+                })}
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="destructive"
+                className="flex-1"
+                onClick={handleDiscardUnfinished}
+              >
+                <Trash2 className="h-4 w-4 mr-1" />
+                {t('workout.discardWorkout')}
+              </Button>
+              <Button
+                className="flex-1"
+                onClick={handleResumeWorkout}
+              >
+                <RefreshCw className="h-4 w-4 mr-1" />
+                {t('workout.resumeWorkout')}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
       )}
     </div>
   );

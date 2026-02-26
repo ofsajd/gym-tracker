@@ -21,28 +21,29 @@ export function AchievementsSection() {
       const allWorkouts = await db.workoutLogs.filter((w) => !!w.completedAt).toArray();
       const totalWorkouts = allWorkouts.length;
 
-      // Streak calculation
-      const { startOfDay, subDays } = await import('date-fns');
-      const workoutDays = new Set(
-        allWorkouts.map((w) => startOfDay(w.completedAt!).getTime())
+      // Streak calculation (week-based)
+      const { startOfWeek, subWeeks } = await import('date-fns');
+      const workoutWeeks = new Set(
+        allWorkouts.map((w) => startOfWeek(w.completedAt!, { weekStartsOn: 1 }).getTime())
       );
       let streak = 0;
-      let day = startOfDay(new Date());
-      if (!workoutDays.has(day.getTime())) {
-        day = subDays(day, 1);
+      let week = startOfWeek(new Date(), { weekStartsOn: 1 });
+      if (!workoutWeeks.has(week.getTime())) {
+        week = subWeeks(week, 1);
       }
-      while (workoutDays.has(day.getTime())) {
+      while (workoutWeeks.has(week.getTime())) {
         streak++;
-        day = subDays(day, 1);
+        week = subWeeks(week, 1);
       }
 
-      // Max streak ever
-      const sortedDays = [...workoutDays].sort((a, b) => a - b);
+      // Max week streak ever
+      const sortedWeeks = [...workoutWeeks].sort((a, b) => a - b);
       let maxStreak = 0;
       let currentStreak = 1;
-      for (let i = 1; i < sortedDays.length; i++) {
-        const diff = sortedDays[i] - sortedDays[i - 1];
-        if (diff === 86400000) {
+      const ONE_WEEK = 7 * 86400000;
+      for (let i = 1; i < sortedWeeks.length; i++) {
+        const diff = sortedWeeks[i] - sortedWeeks[i - 1];
+        if (diff === ONE_WEEK) {
           currentStreak++;
         } else {
           maxStreak = Math.max(maxStreak, currentStreak);
@@ -108,20 +109,20 @@ export function AchievementsSection() {
           progress: `${Math.min(maxStreak, 3)}/3`,
         },
         {
-          id: 'streak_7',
+          id: 'streak_8',
           icon: '⚡',
-          titleKey: 'achievements.streak7',
-          descKey: 'achievements.streak7Desc',
-          unlocked: maxStreak >= 7,
-          progress: `${Math.min(maxStreak, 7)}/7`,
+          titleKey: 'achievements.streak8',
+          descKey: 'achievements.streak8Desc',
+          unlocked: maxStreak >= 8,
+          progress: `${Math.min(maxStreak, 8)}/8`,
         },
         {
-          id: 'streak_30',
+          id: 'streak_12',
           icon: '🏆',
-          titleKey: 'achievements.streak30',
-          descKey: 'achievements.streak30Desc',
-          unlocked: maxStreak >= 30,
-          progress: `${Math.min(maxStreak, 30)}/30`,
+          titleKey: 'achievements.streak12',
+          descKey: 'achievements.streak12Desc',
+          unlocked: maxStreak >= 12,
+          progress: `${Math.min(maxStreak, 12)}/12`,
         },
         {
           id: 'volume_1000',
